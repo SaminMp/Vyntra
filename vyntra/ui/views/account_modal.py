@@ -141,12 +141,24 @@ class AccountModal(ctk.CTkToplevel):
         auth_service.launch_google_signin(_on_done)
 
     def _on_signin_finished(self, success: bool, msg: str):
-        self.signin_btn.configure(state="normal", text="🌐 Sign in with Google")
-        status_key, label, details = auth_service.get_connection_status()
-        self.status_title.configure(text=label, text_color=Theme.SUCCESS if success else Theme.TEXT_MUTED)
-        self.status_msg.configure(text=msg if success else details)
-        if self.on_changed:
-            self.on_changed()
+        try:
+            if not self.winfo_exists():
+                if self.on_changed:
+                    self.on_changed()
+                return
+            self.signin_btn.configure(state="normal", text="🌐 Sign in with Google")
+            status_key, label, details = auth_service.get_connection_status()
+            self.status_title.configure(text=label, text_color=Theme.SUCCESS if success else Theme.TEXT_MUTED)
+            self.status_msg.configure(text=msg if success else details)
+            if self.on_changed:
+                self.on_changed()
+        except Exception:
+            if self.on_changed:
+                try:
+                    self.on_changed()
+                except Exception:
+                    pass
+
 
     def _handle_signout(self):
         auth_service.disconnect()

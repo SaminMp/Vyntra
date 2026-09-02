@@ -154,7 +154,13 @@ class DownloadService:
             # Video (MP4)
             if ffmpeg_status.is_available:
                 ydl_opts.update({
-                    "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+                    # Dynamic format priority:
+                    # 1. Native MP4 video + M4A audio (fast remux)
+                    # 2. H.264/AVC1 video + AAC audio
+                    # 3. Best video (any codec) + best audio (any codec) merged to MP4 via FFmpeg
+                    # 4. Best single pre-muxed MP4 stream
+                    # 5. Best available single stream
+                    "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo+bestaudio/best[ext=mp4]/best",
                     "merge_output_format": "mp4",
                     "postprocessors": [
                         {
@@ -166,7 +172,32 @@ class DownloadService:
             else:
                 # Fallback without FFmpeg: best single container or video stream
                 logger.warning("FFmpeg unavailable. Falling back to native stream without muxing.")
-                ydl_opts["format"] = "best[ext=mp4]/bestvideo[ext=mp4]/bestvideo/best"
+                ydl_opts["format"] = "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
+
+        # Safe diagnostic format inspection logging
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl_probe:
+                meta = ydl_probe.extract_info(task.result.url, download=False)
+                if meta:
+                    v_h = meta.get("height")
+                    v_res = f"{v_h}p" if v_h else (meta.get("resolution") or "audio only")
+                    v_codec = meta.get("vcodec") or "none"
+                    a_codec = meta.get("acodec") or "none"
+                    abr = meta.get("abr")
+                    a_str = f"{int(abr)}kbps" if abr else a_codec
+                    logger.info(
+                        "[Download] Requested output: %s\n"
+                        "[Download] Selected video: %s\n"
+                        "[Download] Selected audio: %s\n"
+                        "[Download] Container: %s",
+                        task.format.value,
+                        v_res,
+                        a_str,
+                        target_ext,
+                    )
+        except Exception as probe_err:
+            logger.debug("Format pre-inspection skipped: %s", probe_err)
+
 
         # Attach progress hook
         def _hook(d: dict):

@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -49,6 +50,25 @@ class FFmpegService:
         path_which = shutil.which("ffmpeg")
         if path_which:
             candidates.append(path_which)
+
+        # 3. Executable / portable directory lookup
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).parent
+            candidates.extend([
+                str(exe_dir / "ffmpeg.exe"),
+                str(exe_dir / "bin" / "ffmpeg.exe"),
+                str(exe_dir / "ffmpeg"),
+            ])
+            if hasattr(sys, "_MEIPASS"):
+                candidates.extend([
+                    str(Path(sys._MEIPASS) / "ffmpeg.exe"),
+                    str(Path(sys._MEIPASS) / "ffmpeg"),
+                ])
+        else:
+            candidates.extend([
+                str(Path.cwd() / "ffmpeg.exe"),
+                str(Path.cwd() / "bin" / "ffmpeg.exe"),
+            ])
 
         # 3. macOS standard paths (Homebrew, MacPorts, local)
         if platform.system() == "Darwin":
