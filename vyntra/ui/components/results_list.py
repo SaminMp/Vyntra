@@ -13,7 +13,13 @@ from vyntra.ui.theme import Theme
 class ResultsList(ctk.CTkScrollableFrame):
     """Scrollable list of search results with state management."""
 
-    def __init__(self, master, on_result_selected: Callable[[SearchResult], None], **kwargs):
+    def __init__(
+        self,
+        master,
+        on_result_selected: Callable[[SearchResult], None],
+        on_preview: Optional[Callable[[SearchResult], None]] = None,
+        **kwargs,
+    ):
         super().__init__(
             master,
             corner_radius=Theme.RADIUS_CARD,
@@ -23,6 +29,7 @@ class ResultsList(ctk.CTkScrollableFrame):
         )
 
         self.on_result_selected = on_result_selected
+        self.on_preview = on_preview
         self._cards: List[ResultCard] = []
         self._selected_card: Optional[ResultCard] = None
 
@@ -136,6 +143,7 @@ class ResultsList(ctk.CTkScrollableFrame):
                 self,
                 result=result,
                 on_select=self._handle_card_selected,
+                on_preview=self.on_preview,
             )
             card.pack(fill="x", padx=6, pady=4)
             self._cards.append(card)

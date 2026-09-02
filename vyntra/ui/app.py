@@ -13,15 +13,19 @@ import customtkinter as ctk
 from vyntra import __app_name__, __version__
 from vyntra.config import config_manager
 from vyntra.models import AudioQuality, DownloadStatus, DownloadTask, MediaFormat, ProgressInfo, SearchResult
+from vyntra.services.auth_service import auth_service
 from vyntra.services.download_service import download_service
 from vyntra.services.ffmpeg_service import ffmpeg_service
 from vyntra.services.search_service import search_service
+from vyntra.services.stream_service import stream_server, stream_service
 from vyntra.ui.components.download_panel import DownloadPanel
 from vyntra.ui.components.results_list import ResultsList
 from vyntra.ui.components.search_bar import SearchBar
 from vyntra.ui.components.status_banner import StatusBanner
 from vyntra.ui.theme import Theme
+from vyntra.ui.views.account_modal import AccountModal
 from vyntra.ui.views.settings_modal import SettingsModal
+from vyntra.ui.views.setup_wizard import SetupWizard
 from vyntra.utils.logger import logger
 
 
@@ -51,11 +55,18 @@ class VyntraApp(ctk.CTk):
         self._create_results_section()
         self._create_download_section()
 
+        # Handle window close cleanup
+        self.protocol("WM_DELETE_WINDOW", self._on_app_close)
+
         # Check FFmpeg on launch and show subtle banner if missing
         self._check_initial_ffmpeg_status()
 
+        # First run: Show Setup Wizard if not completed
+        if not config_manager.config.setup_completed:
+            self.after(250, self._open_setup_wizard)
+
     def _create_header(self):
-        """Top branding header with navigation controls."""
+        """Top branding header with navigation controls and YouTube account status."""
         header = ctk.CTkFrame(self, fg_color=Theme.BG_SIDEBAR, height=58, corner_radius=0)
         header.grid(row=0, column=0, sticky="ew")
         header.grid_columnconfigure(1, weight=1)
@@ -91,9 +102,23 @@ class VyntraApp(ctk.CTk):
         )
         version_badge.pack(side="left", padx=8)
 
-        # Right Action Buttons (Open Folder & Settings)
+        # Right Action Buttons (Account Badge, Downloads & Settings)
         actions_box = ctk.CTkFrame(header, fg_color="transparent")
         actions_box.grid(row=0, column=2, padx=18, pady=10, sticky="e")
+
+        # YouTube Account Status Badge Button
+        self.account_btn = ctk.CTkButton(
+            actions_box,
+            text="○ YouTube: Guest",
+            font=Theme.FONT_CAPTION,
+            height=30,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_CARD,
+            hover_color=Theme.BG_CARD_HOVER,
+            command=self._open_account_modal,
+        )
+        self.account_btn.pack(side="left", padx=(0, 8))
+        self._update_auth_badge()
 
         open_dir_btn = ctk.CTkButton(
             actions_box,
@@ -141,6 +166,7 @@ class VyntraApp(ctk.CTk):
         self.results_list = ResultsList(
             self,
             on_result_selected=self._handle_result_selected,
+            on_preview=self._handle_play_video,
         )
         self.results_list.grid(row=3, column=0, sticky="nsew", padx=16, pady=4)
 
@@ -172,6 +198,9 @@ class VyntraApp(ctk.CTk):
 
     def _handle_search_query(self, query: str):
         """Initiates YouTube search on worker thread."""
+        # Stop any active video player when searching
+        stream_service.stop_playback()
+
         self._current_search_query = query
         self.search_bar.set_loading(True)
         self.results_list.show_loading_state(query)
@@ -200,6 +229,21 @@ class VyntraApp(ctk.CTk):
     def _handle_result_selected(self, result: SearchResult):
         """Updates download panel with newly selected search result."""
         self.download_panel.set_selected_result(result)
+
+    def _handle_play_video(self, result: SearchResult):
+        """Launches live full video and audio player for selected result."""
+        self.download_panel.set_selected_result(result)
+        self.status_banner.show_info(f"Opening player for '{result.display_title}'...")
+        stream_service.play_video(result)
+
+    def _on_app_close(self):
+        """Terminates player process, streams, server, and closes window."""
+        try:
+            stream_service.stop_playback()
+            stream_server.stop()
+        except Exception:
+            pass
+        self.destroy()
 
     def _handle_start_download(self, result: SearchResult, media_format: MediaFormat, save_dir: str):
         """Dispatches download job."""
@@ -248,7 +292,15 @@ class VyntraApp(ctk.CTk):
     def _download_failed(self, err: Exception):
         self.download_panel.set_downloading(False)
         self._active_task_id = None
-        self.status_banner.show_error(f"Download error: {str(err)}")
+        err_msg = str(err)
+        if "Settings" in err_msg or "bot" in err_msg.lower() or "verification" in err_msg.lower():
+            self.status_banner.show_warning(
+                message=err_msg,
+                action_text="Open Settings",
+                on_action=self._open_settings,
+            )
+        else:
+            self.status_banner.show_error(f"Download error: {err_msg}")
 
     def _handle_cancel_download(self):
         if self._active_task_id:
@@ -285,9 +337,28 @@ class VyntraApp(ctk.CTk):
     def _open_settings(self):
         SettingsModal(self, on_saved=self._on_settings_saved)
 
+    def _open_account_modal(self):
+        AccountModal(self, on_changed=self._update_auth_badge)
+
+    def _open_setup_wizard(self):
+        SetupWizard(self, on_completed=self._on_setup_completed)
+
+    def _on_setup_completed(self):
+        self._update_auth_badge()
+        self.download_panel.folder_entry.delete(0, "end")
+        self.download_panel.folder_entry.insert(0, config_manager.config.download_directory)
+        self.download_panel.format_segmented.set(config_manager.config.default_format)
+        self.status_banner.show_success("Setup complete! Welcome to Vyntra.")
+
+    def _update_auth_badge(self):
+        status_key, label, _ = auth_service.get_connection_status()
+        color = Theme.SUCCESS if status_key == "connected" else (Theme.WARNING if status_key == "expired" else Theme.TEXT_MUTED)
+        self.account_btn.configure(text=label, text_color=color)
+
     def _on_settings_saved(self):
         # Refresh download directory in panel
         self.download_panel.folder_entry.delete(0, "end")
         self.download_panel.folder_entry.insert(0, config_manager.config.download_directory)
         self.download_panel.format_segmented.set(config_manager.config.default_format)
+        self._update_auth_badge()
         self.status_banner.show_info("Preferences updated successfully.")

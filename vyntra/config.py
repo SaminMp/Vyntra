@@ -23,6 +23,11 @@ class AppConfig:
     custom_ffmpeg_path: str = ""
     theme_mode: str = "dark"
     color_theme: str = "blue"
+    auth_connected: bool = False
+    auth_status: str = "disconnected"   # "connected", "disconnected", "expired"
+    setup_completed: bool = False
+    google_client_id: str = ""
+    google_client_secret: str = ""
 
     def __post_init__(self):
         if not self.download_directory:

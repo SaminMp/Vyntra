@@ -41,6 +41,16 @@ class DownloadStatus(str, Enum):
     ERROR = "ERROR"
 
 
+class PlaybackState(str, Enum):
+    """Playback state of video preview."""
+    UNSTARTED = "UNSTARTED"
+    BUFFERING = "BUFFERING"
+    PLAYING = "PLAYING"
+    PAUSED = "PAUSED"
+    ENDED = "ENDED"
+    ERROR = "ERROR"
+
+
 @dataclass
 class SearchResult:
     """Represents a single YouTube video search result."""

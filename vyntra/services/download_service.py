@@ -12,6 +12,7 @@ import yt_dlp
 
 from vyntra.config import config_manager
 from vyntra.models import DownloadStatus, DownloadTask, MediaFormat, ProgressInfo
+from vyntra.services.auth_service import auth_service
 from vyntra.services.ffmpeg_service import ffmpeg_service
 from vyntra.utils.filename import get_unique_filepath, sanitize_filename
 from vyntra.utils.formatters import format_bytes, format_duration, format_eta, format_speed
@@ -59,13 +60,14 @@ class DownloadService:
                 with self._lock:
                     self._active_tasks.pop(task.task_id, None)
             except Exception as err:
-                logger.error("Download error for task %s: %s", task.task_id, err)
+                translated_msg = auth_service.translate_error(err)
+                logger.error("Download error for task %s: %s", task.task_id, translated_msg)
                 task.status = DownloadStatus.ERROR
-                task.error_message = str(err)
+                task.error_message = translated_msg
                 self._cleanup_temp_files(task)
                 with self._lock:
                     self._active_tasks.pop(task.task_id, None)
-                on_error(err)
+                on_error(RuntimeError(translated_msg))
 
         self._executor.submit(_worker)
 
@@ -120,6 +122,9 @@ class DownloadService:
             "socket_timeout": 15,
             "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)",
         }
+
+        # Apply YouTube cookie options
+        ydl_opts.update(auth_service.get_ydl_cookie_opts())
 
         if ffmpeg_bin_dir:
             ydl_opts["ffmpeg_location"] = ffmpeg_bin_dir

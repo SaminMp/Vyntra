@@ -1,77 +1,99 @@
 """
-Settings and preferences modal dialog for Vyntra.
+Settings and preferences modal dialog with YouTube Authentication configuration.
 """
 
 from pathlib import Path
+import threading
 from tkinter import filedialog
 from typing import Callable, Optional
 import customtkinter as ctk
 
 from vyntra.config import config_manager
 from vyntra.models import AudioQuality, MediaFormat
+from vyntra.services.auth_service import auth_service
 from vyntra.services.ffmpeg_service import ffmpeg_service
 from vyntra.ui.theme import Theme
 
 
 class SettingsModal(ctk.CTkToplevel):
-    """Configuration dialog for application preferences and diagnostics."""
+    """Configuration dialog for application preferences and in-app YouTube authentication."""
 
     def __init__(self, master, on_saved: Optional[Callable[[], None]] = None, **kwargs):
         super().__init__(master, **kwargs)
 
         self.on_saved = on_saved
         self.title("Vyntra Settings")
-        self.geometry("540x520")
-        self.resizable(False, False)
+        self.geometry("600x620")
+        self.minsize(560, 580)
         self.configure(fg_color=Theme.BG_MAIN)
 
-        # Center modal on parent window
         self.transient(master)
         self.grab_set()
 
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
 
         # Header Title
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        header_frame.pack(fill="x", padx=24, pady=(20, 14))
+        header_frame.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 10))
 
         title_label = ctk.CTkLabel(
             header_frame,
-            text="⚙️ Preferences",
+            text="⚙️ Preferences & Account",
             font=Theme.FONT_TITLE,
             text_color=Theme.TEXT_PRIMARY,
         )
         title_label.pack(anchor="w")
 
         # Scrollable Settings Container
-        content_frame = ctk.CTkFrame(self, fg_color=Theme.BG_CARD, corner_radius=Theme.RADIUS_CARD)
-        content_frame.pack(fill="both", expand=True, padx=24, pady=(0, 16))
-        content_frame.grid_columnconfigure(1, weight=1)
+        self.scroll_frame = ctk.CTkScrollableFrame(
+            self,
+            fg_color=Theme.BG_CARD,
+            corner_radius=Theme.RADIUS_CARD,
+        )
+        self.scroll_frame.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 14))
+        self.scroll_frame.grid_columnconfigure(1, weight=1)
 
+        self._build_general_settings()
+        self._build_auth_settings()
+        self._build_diagnostics_section()
+        self._build_action_buttons()
+
+    def _build_general_settings(self):
+        """General download and search preferences."""
         row = 0
 
-        # 1. Default Download Directory
+        sec_label = ctk.CTkLabel(
+            self.scroll_frame,
+            text="📁 Download Preferences",
+            font=Theme.FONT_HEADER,
+            text_color=Theme.TEXT_ACCENT,
+        )
+        sec_label.grid(row=row, column=0, columnspan=2, padx=16, pady=(12, 8), sticky="w")
+        row += 1
+
+        # 1. Download Directory
         dir_label = ctk.CTkLabel(
-            content_frame,
-            text="Default Download Directory:",
+            self.scroll_frame,
+            text="Save Destination:",
             font=Theme.FONT_BODY_BOLD,
             text_color=Theme.TEXT_SECONDARY,
         )
-        dir_label.grid(row=row, column=0, columnspan=2, padx=16, pady=(16, 4), sticky="w")
+        dir_label.grid(row=row, column=0, columnspan=2, padx=16, pady=(4, 2), sticky="w")
         row += 1
 
         self.dir_entry = ctk.CTkEntry(
-            content_frame,
+            self.scroll_frame,
             font=Theme.FONT_CAPTION,
             fg_color=Theme.BG_INPUT,
             border_color=Theme.BORDER_CARD,
             height=32,
         )
         self.dir_entry.insert(0, config_manager.config.download_directory)
-        self.dir_entry.grid(row=row, column=0, padx=(16, 8), pady=(0, 14), sticky="ew")
+        self.dir_entry.grid(row=row, column=0, padx=(16, 8), pady=(0, 10), sticky="ew")
 
         browse_btn = ctk.CTkButton(
-            content_frame,
+            self.scroll_frame,
             text="Browse",
             font=Theme.FONT_CAPTION,
             width=70,
@@ -81,12 +103,12 @@ class SettingsModal(ctk.CTkToplevel):
             hover_color=Theme.BG_CARD_HOVER,
             command=self._browse_folder,
         )
-        browse_btn.grid(row=row, column=1, padx=(0, 16), pady=(0, 14), sticky="e")
+        browse_btn.grid(row=row, column=1, padx=(0, 16), pady=(0, 10), sticky="e")
         row += 1
 
         # 2. Default Format
         fmt_label = ctk.CTkLabel(
-            content_frame,
+            self.scroll_frame,
             text="Default Format:",
             font=Theme.FONT_BODY_BOLD,
             text_color=Theme.TEXT_SECONDARY,
@@ -94,7 +116,7 @@ class SettingsModal(ctk.CTkToplevel):
         fmt_label.grid(row=row, column=0, padx=16, pady=4, sticky="w")
 
         self.fmt_segmented = ctk.CTkSegmentedButton(
-            content_frame,
+            self.scroll_frame,
             values=[MediaFormat.MP3.value, MediaFormat.MP4.value],
             font=Theme.FONT_BODY,
             selected_color=Theme.PRIMARY,
@@ -105,7 +127,7 @@ class SettingsModal(ctk.CTkToplevel):
 
         # 3. Audio Bitrate Quality
         bitrate_label = ctk.CTkLabel(
-            content_frame,
+            self.scroll_frame,
             text="MP3 Audio Quality:",
             font=Theme.FONT_BODY_BOLD,
             text_color=Theme.TEXT_SECONDARY,
@@ -113,7 +135,7 @@ class SettingsModal(ctk.CTkToplevel):
         bitrate_label.grid(row=row, column=0, padx=16, pady=4, sticky="w")
 
         self.bitrate_option = ctk.CTkOptionMenu(
-            content_frame,
+            self.scroll_frame,
             values=["192 kbps (Standard)", "256 kbps (High)", "320 kbps (Best)"],
             font=Theme.FONT_BODY,
             fg_color=Theme.BG_MUTED,
@@ -133,15 +155,15 @@ class SettingsModal(ctk.CTkToplevel):
 
         # 4. Search Results Limit
         limit_label = ctk.CTkLabel(
-            content_frame,
+            self.scroll_frame,
             text="Max Search Results:",
             font=Theme.FONT_BODY_BOLD,
             text_color=Theme.TEXT_SECONDARY,
         )
-        limit_label.grid(row=row, column=0, padx=16, pady=4, sticky="w")
+        limit_label.grid(row=row, column=0, padx=16, pady=(4, 14), sticky="w")
 
         self.limit_option = ctk.CTkOptionMenu(
-            content_frame,
+            self.scroll_frame,
             values=["8", "12", "16", "20", "25"],
             font=Theme.FONT_BODY,
             fg_color=Theme.BG_MUTED,
@@ -150,16 +172,107 @@ class SettingsModal(ctk.CTkToplevel):
             dropdown_fg_color=Theme.BG_CARD,
         )
         self.limit_option.set(str(config_manager.config.max_search_results))
-        self.limit_option.grid(row=row, column=1, padx=16, pady=4, sticky="e")
+        self.limit_option.grid(row=row, column=1, padx=16, pady=(4, 14), sticky="e")
+        self._next_row = row + 1
+
+    def _build_auth_settings(self):
+        """Clean in-app YouTube account and Google authentication section."""
+        row = self._next_row
+
+        # Divider
+        divider = ctk.CTkFrame(self.scroll_frame, height=1, fg_color=Theme.BORDER_CARD)
+        divider.grid(row=row, column=0, columnspan=2, padx=16, pady=10, sticky="ew")
         row += 1
 
-        # 5. FFmpeg Status / Diagnostics
-        ffmpeg_box = ctk.CTkFrame(content_frame, fg_color=Theme.BG_MAIN, corner_radius=Theme.RADIUS_BUTTON)
-        ffmpeg_box.grid(row=row, column=0, columnspan=2, padx=16, pady=12, sticky="ew")
+        # Section Header
+        auth_header = ctk.CTkLabel(
+            self.scroll_frame,
+            text="🔐 YouTube Account",
+            font=Theme.FONT_HEADER,
+            text_color=Theme.TEXT_ACCENT,
+        )
+        auth_header.grid(row=row, column=0, columnspan=2, padx=16, pady=(4, 2), sticky="w")
+        row += 1
+
+        auth_sub = ctk.CTkLabel(
+            self.scroll_frame,
+            text="Connect your Google / YouTube account for seamless high-quality media access.",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_MUTED,
+        )
+        auth_sub.grid(row=row, column=0, columnspan=2, padx=16, pady=(0, 8), sticky="w")
+        row += 1
+
+        # Account Status & Action Box
+        auth_box = ctk.CTkFrame(self.scroll_frame, fg_color=Theme.BG_MAIN, corner_radius=Theme.RADIUS_BUTTON)
+        auth_box.grid(row=row, column=0, columnspan=2, padx=16, pady=(4, 12), sticky="ew")
+        auth_box.grid_columnconfigure(0, weight=1)
+
+        status_key, label, msg = auth_service.get_connection_status()
+        status_color = Theme.SUCCESS if status_key == "connected" else Theme.TEXT_MUTED
+
+        self.auth_status_lbl = ctk.CTkLabel(
+            auth_box,
+            text=f"{label}  —  {msg}",
+            font=Theme.FONT_CAPTION,
+            text_color=status_color,
+            wraplength=480,
+            justify="left",
+        )
+        self.auth_status_lbl.pack(padx=14, pady=(10, 8), anchor="w")
+
+        btn_row = ctk.CTkFrame(auth_box, fg_color="transparent")
+        btn_row.pack(fill="x", padx=14, pady=(0, 12))
+
+        self.signin_btn = ctk.CTkButton(
+            btn_row,
+            text="🌐 Sign in with Google",
+            font=Theme.FONT_CAPTION,
+            height=30,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.ACCENT_CYAN,
+            hover_color=Theme.ACCENT_CYAN_HOVER,
+            command=self._run_signin,
+        )
+        self.signin_btn.pack(side="left", padx=(0, 8))
+
+        self.signout_btn = ctk.CTkButton(
+            btn_row,
+            text="Sign Out",
+            font=Theme.FONT_CAPTION,
+            height=30,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_MUTED,
+            hover_color=Theme.ERROR_BG,
+            command=self._run_signout,
+        )
+        self.signout_btn.pack(side="left", padx=(0, 8))
+
+        self.test_btn = ctk.CTkButton(
+            btn_row,
+            text="🧪 Test Connection",
+            font=Theme.FONT_CAPTION,
+            height=30,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_MUTED,
+            hover_color=Theme.BG_CARD_HOVER,
+            command=self._run_test,
+        )
+        self.test_btn.pack(side="left")
+
+        row += 1
+        self._next_row = row
+
+    def _build_diagnostics_section(self):
+        """System diagnostics section."""
+        row = self._next_row
+
+        ffmpeg_box = ctk.CTkFrame(self.scroll_frame, fg_color=Theme.BG_MAIN, corner_radius=Theme.RADIUS_BUTTON)
+        ffmpeg_box.grid(row=row, column=0, columnspan=2, padx=16, pady=(6, 12), sticky="ew")
         ffmpeg_box.grid_columnconfigure(0, weight=1)
 
         status = ffmpeg_service.get_status()
-        status_text = f"✓ FFmpeg: Installed ({status.ffmpeg_path})" if status.is_available else "⚠️ FFmpeg: Not Found (Audio conversion will use native fallback)"
+        status_text = f"✓ FFmpeg: Detected ({status.ffmpeg_path})" if status.is_available else "⚠️ FFmpeg: Not Found"
         status_color = Theme.SUCCESS if status.is_available else Theme.WARNING
 
         ffmpeg_info = ctk.CTkLabel(
@@ -168,14 +281,14 @@ class SettingsModal(ctk.CTkToplevel):
             font=Theme.FONT_CAPTION,
             text_color=status_color,
             justify="left",
-            wraplength=450,
+            wraplength=480,
         )
         ffmpeg_info.pack(padx=12, pady=8, anchor="w")
-        row += 1
 
-        # Action Buttons (Save / Cancel)
+    def _build_action_buttons(self):
+        """Save and Close buttons."""
         actions_frame = ctk.CTkFrame(self, fg_color="transparent")
-        actions_frame.pack(fill="x", padx=24, pady=(0, 20))
+        actions_frame.grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 16))
 
         save_btn = ctk.CTkButton(
             actions_frame,
@@ -206,6 +319,46 @@ class SettingsModal(ctk.CTkToplevel):
         if chosen:
             self.dir_entry.delete(0, "end")
             self.dir_entry.insert(0, chosen)
+
+    def _run_signin(self):
+        self.signin_btn.configure(state="disabled", text="Opening Browser...")
+        self.auth_status_lbl.configure(text="Complete sign-in in your browser...", text_color=Theme.TEXT_MUTED)
+
+        def _on_done(success: bool, msg: str):
+            self.after(0, lambda: self._on_signin_done(success, msg))
+
+        auth_service.launch_google_signin(_on_done)
+
+    def _on_signin_done(self, success: bool, msg: str):
+        self.signin_btn.configure(state="normal", text="🌐 Sign in with Google")
+        status_key, label, details = auth_service.get_connection_status()
+        self.auth_status_lbl.configure(
+            text=f"{label}  —  {msg}",
+            text_color=Theme.SUCCESS if success else Theme.TEXT_MUTED,
+        )
+
+    def _run_signout(self):
+        auth_service.disconnect()
+        status_key, label, details = auth_service.get_connection_status()
+        self.auth_status_lbl.configure(text=f"{label}  —  {details}", text_color=Theme.TEXT_MUTED)
+
+    def _run_test(self):
+        self.test_btn.configure(state="disabled", text="Testing...")
+        self.auth_status_lbl.configure(text="Testing Google OAuth connection...", text_color=Theme.TEXT_MUTED)
+
+        def _worker():
+            success, msg = auth_service.test_connection()
+            self.after(0, lambda: self._on_test_done(success, msg))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_test_done(self, success: bool, msg: str):
+        self.test_btn.configure(state="normal", text="🧪 Test Connection")
+        status_key, label, _ = auth_service.get_connection_status()
+        self.auth_status_lbl.configure(
+            text=f"{label}  —  {msg}",
+            text_color=Theme.SUCCESS if success else Theme.WARNING,
+        )
 
     def _save_settings(self):
         dir_val = self.dir_entry.get().strip() or str(Path.home() / "Downloads" / "Vyntra")

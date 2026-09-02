@@ -20,6 +20,7 @@ class ResultCard(ctk.CTkFrame):
         master,
         result: SearchResult,
         on_select: Callable[[SearchResult], None],
+        on_preview: Optional[Callable[[SearchResult], None]] = None,
         **kwargs,
     ):
         super().__init__(
@@ -34,6 +35,7 @@ class ResultCard(ctk.CTkFrame):
 
         self.result = result
         self.on_select = on_select
+        self.on_preview = on_preview
         self._is_selected = False
 
         self.grid_columnconfigure(1, weight=1)
@@ -79,7 +81,7 @@ class ResultCard(ctk.CTkFrame):
             text_color=Theme.TEXT_PRIMARY,
             anchor="w",
             justify="left",
-            wraplength=480,
+            wraplength=420,
         )
         self.title_label.grid(row=0, column=0, sticky="nw", pady=(0, 4))
 
@@ -110,22 +112,37 @@ class ResultCard(ctk.CTkFrame):
         )
         self.meta_label.grid(row=2, column=0, sticky="w")
 
-        # 3. Action / Selection Badge (Right)
+        # 3. Action Buttons (Right: Preview & Select)
         self.action_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.action_frame.grid(row=0, column=2, padx=(6, 14), pady=10, sticky="e")
 
+        # Play Video Button
+        self.preview_btn = ctk.CTkButton(
+            self.action_frame,
+            text="▶ Play Video",
+            font=Theme.FONT_CAPTION,
+            width=90,
+            height=32,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_MUTED,
+            hover_color=Theme.ACCENT_CYAN,
+            command=self._handle_preview,
+        )
+        self.preview_btn.pack(side="left", padx=(0, 6))
+
+        # Select Button
         self.select_btn = ctk.CTkButton(
             self.action_frame,
             text="Select",
             font=Theme.FONT_CAPTION,
-            width=76,
+            width=70,
             height=32,
             corner_radius=Theme.RADIUS_BUTTON,
             fg_color=Theme.BG_MUTED,
             hover_color=Theme.PRIMARY_HOVER,
             command=self._handle_click,
         )
-        self.select_btn.pack(side="right", padx=2)
+        self.select_btn.pack(side="left")
 
         # Bind hover and click events across all child widgets
         self._bind_events([
@@ -199,3 +216,10 @@ class ResultCard(ctk.CTkFrame):
     def _handle_click(self):
         if self.on_select:
             self.on_select(self.result)
+
+    def _handle_preview(self):
+        # Select the card and trigger preview
+        if self.on_select:
+            self.on_select(self.result)
+        if self.on_preview:
+            self.on_preview(self.result)

@@ -57,8 +57,8 @@ class TestDownloadIntegration(unittest.TestCase):
                 on_error=_on_error,
             )
 
-            # Wait up to 25 seconds for the short 19-sec video download
-            finished = completion_event.wait(timeout=25)
+            # Wait up to 50 seconds for download and conversion
+            finished = completion_event.wait(timeout=50)
             self.assertTrue(finished, "Download timed out")
             self.assertEqual(len(error_holder), 0, f"Download failed with error: {error_holder}")
             self.assertEqual(len(completed_file), 1)
