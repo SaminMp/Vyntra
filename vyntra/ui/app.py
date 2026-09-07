@@ -18,6 +18,7 @@ from vyntra.services.download_service import download_service
 from vyntra.services.ffmpeg_service import ffmpeg_service
 from vyntra.services.search_service import search_service
 from vyntra.services.stream_service import stream_server, stream_service
+from vyntra.services.watch_later_service import watch_later_service
 from vyntra.ui.components.download_panel import DownloadPanel
 from vyntra.ui.components.results_list import ResultsList
 from vyntra.ui.components.search_bar import SearchBar
@@ -27,6 +28,7 @@ from vyntra.ui.views.account_modal import AccountModal
 from vyntra.ui.views.player_modal import VideoPlayerModal
 from vyntra.ui.views.settings_modal import SettingsModal
 from vyntra.ui.views.setup_wizard import SetupWizard
+from vyntra.ui.views.watch_later_view import WatchLaterView
 from vyntra.utils.logger import logger
 
 
@@ -46,6 +48,7 @@ class VyntraApp(ctk.CTk):
         self._active_task_id: Optional[str] = None
         self._current_search_query: str = ""
         self._player_modal: Optional[VideoPlayerModal] = None
+        self._is_watch_later_active: bool = False
 
         # Layout Configuration
         self.grid_columnconfigure(0, weight=1)
@@ -139,6 +142,19 @@ class VyntraApp(ctk.CTk):
         self.account_btn.pack(side="left", padx=(0, 8))
         self._update_auth_badge()
 
+        # Watch Later library button
+        self.watch_later_btn = ctk.CTkButton(
+            actions_box,
+            text=f"⭐ Watch Later ({watch_later_service.count()})",
+            font=Theme.FONT_CAPTION,
+            height=30,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_CARD,
+            hover_color=Theme.BG_CARD_HOVER,
+            command=self._toggle_watch_later_view,
+        )
+        self.watch_later_btn.pack(side="left", padx=(0, 8))
+
         open_dir_btn = ctk.CTkButton(
             actions_box,
             text="📁 Downloads",
@@ -173,21 +189,31 @@ class VyntraApp(ctk.CTk):
 
     def _create_search_section(self):
         """Search input container."""
-        search_container = ctk.CTkFrame(self, fg_color="transparent")
-        search_container.grid(row=2, column=0, sticky="ew", padx=16, pady=(12, 8))
-        search_container.grid_columnconfigure(0, weight=1)
+        self.search_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.search_container.grid(row=2, column=0, sticky="ew", padx=16, pady=(12, 8))
+        self.search_container.grid_columnconfigure(0, weight=1)
 
-        self.search_bar = SearchBar(search_container, on_search=self._handle_search_query)
+        self.search_bar = SearchBar(self.search_container, on_search=self._handle_search_query)
         self.search_bar.grid(row=0, column=0, sticky="ew")
 
     def _create_results_section(self):
-        """Scrollable results container."""
+        """Scrollable results container and watch later view."""
         self.results_list = ResultsList(
             self,
             on_result_selected=self._handle_result_selected,
             on_preview=self._handle_play_video,
+            on_watch_later_changed=self._update_watch_later_badge,
         )
         self.results_list.grid(row=3, column=0, sticky="nsew", padx=16, pady=4)
+
+        # Watch Later View (initially hidden)
+        self.watch_later_view = WatchLaterView(
+            self,
+            on_watch=self._handle_play_video,
+            on_download=self._handle_watch_later_download,
+            on_back=self._show_search_view,
+            on_count_changed=self._on_watch_later_count_changed,
+        )
 
     def _create_download_section(self):
         """Bottom download controls panel."""
@@ -217,6 +243,9 @@ class VyntraApp(ctk.CTk):
 
     def _handle_search_query(self, query: str):
         """Initiates YouTube search on worker thread."""
+        if self._is_watch_later_active:
+            self._show_search_view()
+
         # Stop any active video player when searching
         stream_service.stop_playback()
 
@@ -266,6 +295,42 @@ class VyntraApp(ctk.CTk):
     def _on_player_closed(self):
         """Callback when the video player modal is closed."""
         self._player_modal = None
+
+    def _update_watch_later_badge(self):
+        """Updates the Watch Later button text with current item count."""
+        count = watch_later_service.count()
+        self.watch_later_btn.configure(text=f"⭐ Watch Later ({count})")
+
+    def _on_watch_later_count_changed(self, count: int):
+        self.watch_later_btn.configure(text=f"⭐ Watch Later ({count})")
+
+    def _toggle_watch_later_view(self):
+        if self._is_watch_later_active:
+            self._show_search_view()
+        else:
+            self._show_watch_later_view()
+
+    def _show_watch_later_view(self):
+        self._is_watch_later_active = True
+        self.search_container.grid_remove()
+        self.results_list.grid_remove()
+        self.watch_later_view.grid(row=2, column=0, rowspan=2, sticky="nsew", padx=16, pady=4)
+        self.watch_later_view.refresh()
+        self.watch_later_btn.configure(fg_color=Theme.BG_CARD_SELECTED)
+
+    def _show_search_view(self):
+        self._is_watch_later_active = False
+        self.watch_later_view.grid_remove()
+        self.search_container.grid()
+        self.results_list.grid()
+        self.watch_later_btn.configure(fg_color=Theme.BG_CARD)
+
+    def _handle_watch_later_download(self, result: SearchResult, media_format: MediaFormat):
+        """Starts download directly from Watch Later card using standard download pipeline."""
+        self.download_panel.set_selected_result(result)
+        self.download_panel.set_selected_format(media_format)
+        save_dir = config_manager.config.download_directory
+        self._handle_start_download(result, media_format, "best", save_dir)
 
     def _on_app_close(self):
         """Terminates player modal, streams, server, and closes window."""

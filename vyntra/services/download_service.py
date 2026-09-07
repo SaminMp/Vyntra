@@ -15,6 +15,7 @@ from vyntra.config import config_manager
 from vyntra.models import DownloadStatus, DownloadTask, MediaFormat, ProgressInfo
 from vyntra.services.auth_service import auth_service
 from vyntra.services.ffmpeg_service import ffmpeg_service
+from vyntra.services.youtube_service import youtube_service
 from vyntra.utils.filename import get_unique_filepath, sanitize_filename
 from vyntra.utils.formatters import format_bytes, format_duration, format_eta, format_speed
 from vyntra.utils.logger import logger
@@ -88,94 +89,8 @@ class DownloadService:
             return task_id in self._active_tasks
 
     def build_ydl_options(self, task: DownloadTask, out_base_without_ext: str) -> dict:
-        """Builds yt-dlp option dictionary configured for format, quality, metadata and cookies."""
-        ffmpeg_status = ffmpeg_service.get_status()
-        ffmpeg_bin_dir = str(Path(ffmpeg_status.ffmpeg_path).parent) if ffmpeg_status.ffmpeg_path else None
-
-        # Base yt-dlp options
-        ydl_opts = {
-            "outtmpl": f"{out_base_without_ext}.%(ext)s",
-            "quiet": True,
-            "no_warnings": True,
-            "nocheckcertificate": True,
-            "retries": 5,
-            "fragment_retries": 5,
-            "socket_timeout": 15,
-            "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)",
-        }
-
-        # Apply YouTube cookie options
-        ydl_opts.update(auth_service.get_ydl_cookie_opts())
-
-        if ffmpeg_bin_dir:
-            ydl_opts["ffmpeg_location"] = ffmpeg_bin_dir
-
-        # Format & Post-Processor configuration
-        if task.format == MediaFormat.MP3:
-            # Resolve bitrate (e.g. "320 kbps" -> "320")
-            raw_q = str(getattr(task, "selected_quality", "") or getattr(task.audio_quality, "value", "320"))
-            digits = "".join(filter(str.isdigit, raw_q))
-            bitrate = digits if digits in ("128", "192", "256", "320") else "320"
-
-            if ffmpeg_status.is_available:
-                ydl_opts.update({
-                    "format": "bestaudio/best",
-                    "postprocessors": [
-                        {
-                            "key": "FFmpegExtractAudio",
-                            "preferredcodec": "mp3",
-                            "preferredquality": bitrate,
-                        },
-                        {
-                            "key": "FFmpegMetadata",
-                            "add_metadata": True,
-                        },
-                    ],
-                })
-            else:
-                logger.warning("FFmpeg unavailable. Falling back to native audio stream.")
-                ydl_opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
-        else:
-            # Video (MP4) - Resolve requested height with fallback
-            raw_q = str(getattr(task, "selected_quality", "") or getattr(task.video_quality, "value", "best")).lower()
-            height_match = re.search(r"(\d{3,4})", raw_q)
-            target_height = int(height_match.group(1)) if height_match else None
-
-            if ffmpeg_status.is_available:
-                if target_height:
-                    # Dynamically target <= height with fallback to closest available resolution
-                    format_spec = (
-                        f"bestvideo[height<={target_height}][ext=mp4]+bestaudio[ext=m4a]/"
-                        f"bestvideo[height<={target_height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
-                        f"bestvideo[height<={target_height}]+bestaudio/"
-                        f"best[height<={target_height}][ext=mp4]/"
-                        f"best[height<={target_height}]/best"
-                    )
-                else:
-                    format_spec = (
-                        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
-                        "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
-                        "bestvideo+bestaudio/best[ext=mp4]/best"
-                    )
-
-                ydl_opts.update({
-                    "format": format_spec,
-                    "merge_output_format": "mp4",
-                    "postprocessors": [
-                        {
-                            "key": "FFmpegMetadata",
-                            "add_metadata": True,
-                        }
-                    ],
-                })
-            else:
-                logger.warning("FFmpeg unavailable. Falling back to native stream without muxing.")
-                if target_height:
-                    ydl_opts["format"] = f"best[height<={target_height}][ext=mp4]/best[height<={target_height}]/best"
-                else:
-                    ydl_opts["format"] = "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
-
-        return ydl_opts
+        """Builds yt-dlp option dictionary configured for format, quality, metadata and cookies via YouTubeService."""
+        return youtube_service.build_download_options(task, out_base_without_ext)
 
     def _execute_download(
         self,

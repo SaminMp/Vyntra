@@ -22,11 +22,12 @@ class TestAuthService(unittest.TestCase):
         """Verify raw exceptions are translated into clear guidance."""
         bot_err = Exception("ERROR: [youtube] Obvg5jVCvxc: Sign in to confirm you’re not a bot.")
         msg = auth_service.translate_error(bot_err)
-        self.assertIn("Sign In with Google", msg)
+        self.assertIn("cookies.txt", msg)
+        self.assertNotIn("Sign In with Google", msg)
 
         priv_err = Exception("ERROR: [youtube] 12345: Private video")
         msg_priv = auth_service.translate_error(priv_err)
-        self.assertIn("private", msg_priv)
+        self.assertIn("private", msg_priv.lower())
 
 
 if __name__ == "__main__":

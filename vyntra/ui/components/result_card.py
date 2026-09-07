@@ -7,6 +7,7 @@ import customtkinter as ctk
 
 from vyntra.models import SearchResult
 from vyntra.services.image_service import image_service
+from vyntra.services.watch_later_service import watch_later_service
 from vyntra.ui.theme import Theme
 
 
@@ -21,6 +22,7 @@ class ResultCard(ctk.CTkFrame):
         result: SearchResult,
         on_select: Callable[[SearchResult], None],
         on_preview: Optional[Callable[[SearchResult], None]] = None,
+        on_watch_later_changed: Optional[Callable[[], None]] = None,
         **kwargs,
     ):
         super().__init__(
@@ -36,6 +38,7 @@ class ResultCard(ctk.CTkFrame):
         self.result = result
         self.on_select = on_select
         self.on_preview = on_preview
+        self.on_watch_later_changed = on_watch_later_changed
         self._is_selected = False
 
         self.grid_columnconfigure(1, weight=1)
@@ -130,6 +133,21 @@ class ResultCard(ctk.CTkFrame):
         )
         self.preview_btn.pack(side="left", padx=(0, 6))
 
+        # Watch Later Button
+        is_saved = watch_later_service.is_saved(self.result.video_id)
+        self.watch_later_btn = ctk.CTkButton(
+            self.action_frame,
+            text="✓ Saved" if is_saved else "♡ Watch Later",
+            font=Theme.FONT_CAPTION,
+            width=96,
+            height=32,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_MUTED,
+            hover_color=Theme.PRIMARY if not is_saved else Theme.BG_CARD_HOVER,
+            command=self._handle_watch_later,
+        )
+        self.watch_later_btn.pack(side="left", padx=(0, 6))
+
         # Select Button
         self.select_btn = ctk.CTkButton(
             self.action_frame,
@@ -223,3 +241,13 @@ class ResultCard(ctk.CTkFrame):
             self.on_select(self.result)
         if self.on_preview:
             self.on_preview(self.result)
+
+    def _handle_watch_later(self):
+        if watch_later_service.is_saved(self.result.video_id):
+            self.watch_later_btn.configure(text="Already Saved")
+            self.after(1500, lambda: self.watch_later_btn.configure(text="✓ Saved"))
+        else:
+            if watch_later_service.add(self.result):
+                self.watch_later_btn.configure(text="✓ Saved")
+                if self.on_watch_later_changed:
+                    self.on_watch_later_changed()

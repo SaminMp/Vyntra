@@ -116,7 +116,7 @@ class VideoPlayerModal(ctk.CTkToplevel):
 
         self.loading_label = ctk.CTkLabel(
             self.video_container,
-            text="⏳ Buffering stream from YouTube...",
+            text="Loading the video...",
             font=Theme.FONT_HEADER,
             text_color=Theme.TEXT_MUTED,
         )
@@ -265,52 +265,35 @@ class VideoPlayerModal(ctk.CTkToplevel):
         self.seek_slider.set(0.0)
         self.time_label.configure(text=f"00:00 / {format_duration(self._duration)}")
 
-        self.loading_label.configure(text="⏳ Buffering stream from YouTube...", text_color=Theme.TEXT_MUTED)
+        self.loading_label.configure(text="Loading the video...", text_color=Theme.TEXT_MUTED)
         self.loading_label.lift()
 
         # Stop previous player if any
         self._stop_current_player()
 
-        def _worker():
-            try:
-                v_url, a_url, headers, duration, title, channel = stream_service.extract_stream_urls(
-                    result.url or result.video_id
-                )
-                if self._is_closed:
-                    return
+        def _on_ready(file_path: str, duration: int):
+            if not self._is_closed:
+                self.after(0, lambda: self._start_playback(file_path, duration))
 
-                actual_duration = duration or self._duration
-                stream_state.update(
-                    video_id=result.video_id,
-                    title=result.display_title or title,
-                    channel=result.channel or channel,
-                    duration=actual_duration,
-                    video_url=v_url,
-                    audio_url=a_url,
-                    headers=headers,
-                )
+        def _on_error(err: Exception):
+            if not self._is_closed:
+                logger.error("Unable to play video (%s): %s", result.video_id, err, exc_info=True)
+                self.after(0, lambda: self.loading_label.configure(
+                    text="Unable to play this video.", text_color=Theme.ERROR
+                ))
 
-                # Use local transmuxing HTTP server to feed progressive MP4 to MediaPlayer
-                port = stream_server.start()
-                stream_url = f"http://127.0.0.1:{port}/stream.mp4"
+        stream_service.prepare_video_for_playback(
+            result=result,
+            on_ready=_on_ready,
+            on_error=_on_error,
+        )
 
-                self.after(0, lambda: self._start_playback(stream_url, actual_duration))
-
-            except Exception as err:
-                logger.error("Player stream extraction failed: %s", err)
-                if not self._is_closed:
-                    self.after(0, lambda: self.loading_label.configure(
-                        text=f"⚠️ Playback Error: {err}", text_color=Theme.ERROR
-                    ))
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _start_playback(self, stream_url: str, duration: int):
+    def _start_playback(self, media_path: str, duration: int):
         if self._is_closed or not MediaPlayer:
             return
 
-        self._duration = duration
-        self.seek_slider.configure(to=max(1.0, float(duration)))
+        self._duration = duration or self._duration
+        self.seek_slider.configure(to=max(1.0, float(self._duration)))
 
         ff_opts = {
             "sync": "audio",
@@ -319,18 +302,18 @@ class VideoPlayerModal(ctk.CTkToplevel):
         }
 
         try:
-            self._player = MediaPlayer(stream_url, ff_opts=ff_opts)
+            self._player = MediaPlayer(media_path, ff_opts=ff_opts)
             self._player.set_volume(self.vol_slider.get())
             self._is_paused = False
             self.play_btn.configure(text="⏸ Pause")
-            logger.info("MediaPlayer initialized for stream: %s", stream_url)
+            logger.info("MediaPlayer initialized for media: %s", media_path)
 
             # Start the render loop
             self.after(30, self._render_loop)
 
         except Exception as e:
-            logger.error("Failed to initialize MediaPlayer: %s", e)
-            self.loading_label.configure(text=f"⚠️ Playback failed: {e}", text_color=Theme.ERROR)
+            logger.error("Failed to initialize MediaPlayer for %s: %s", media_path, e, exc_info=True)
+            self.loading_label.configure(text="Unable to play this video.", text_color=Theme.ERROR)
 
     def _render_loop(self):
         """Continuously pulls decoded video frames and updates the UI."""

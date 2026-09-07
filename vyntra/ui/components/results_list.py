@@ -18,6 +18,7 @@ class ResultsList(ctk.CTkScrollableFrame):
         master,
         on_result_selected: Callable[[SearchResult], None],
         on_preview: Optional[Callable[[SearchResult], None]] = None,
+        on_watch_later_changed: Optional[Callable[[], None]] = None,
         **kwargs,
     ):
         super().__init__(
@@ -30,6 +31,7 @@ class ResultsList(ctk.CTkScrollableFrame):
 
         self.on_result_selected = on_result_selected
         self.on_preview = on_preview
+        self.on_watch_later_changed = on_watch_later_changed
         self._cards: List[ResultCard] = []
         self._selected_card: Optional[ResultCard] = None
 
@@ -144,6 +146,7 @@ class ResultsList(ctk.CTkScrollableFrame):
                 result=result,
                 on_select=self._handle_card_selected,
                 on_preview=self.on_preview,
+                on_watch_later_changed=self.on_watch_later_changed,
             )
             card.pack(fill="x", padx=6, pady=4)
             self._cards.append(card)

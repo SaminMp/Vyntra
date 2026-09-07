@@ -53,6 +53,7 @@ class DownloadPanel(ctk.CTkFrame):
         self.selected_result: Optional[SearchResult] = None
         self._is_downloading = False
         self._cached_video_resolutions: List[str] = list(DEFAULT_VIDEO_QUALITY_OPTIONS)
+        self._probe_error_message: Optional[str] = None
 
         self.grid_columnconfigure(0, weight=1)
 
@@ -254,12 +255,19 @@ class DownloadPanel(ctk.CTkFrame):
     def set_selected_result(self, result: Optional[SearchResult]):
         """Updates selected search result in panel and probes available resolutions."""
         self.selected_result = result
+        self._probe_error_message = None
         if result:
             self.selected_title_label.configure(
                 text=f"Selected: {result.display_title}",
                 text_color=Theme.TEXT_ACCENT,
             )
             self.download_btn.configure(state="normal")
+
+            # Reset cached resolutions while probing new video to avoid showing stale values
+            self._cached_video_resolutions = ["Probing formats..."]
+            if self.format_segmented.get() == MediaFormat.MP4.value:
+                self.quality_option.configure(values=self._cached_video_resolutions)
+                self.quality_option.set("Probing formats...")
 
             # Asynchronously probe available resolutions for this specific video
             search_service.get_available_resolutions_async(
@@ -272,15 +280,24 @@ class DownloadPanel(ctk.CTkFrame):
                 text_color=Theme.TEXT_MUTED,
             )
             self._cached_video_resolutions = list(DEFAULT_VIDEO_QUALITY_OPTIONS)
+            if self.format_segmented.get() == MediaFormat.MP4.value:
+                self.quality_option.configure(values=self._cached_video_resolutions)
+                self.quality_option.set(self._cached_video_resolutions[0])
 
         self._update_download_button_text()
 
-    def _on_resolutions_probed(self, resolutions: List[str]):
+    def _on_resolutions_probed(self, resolutions: List[str], error_message: Optional[str] = None):
         """Called when video resolutions are probed asynchronously."""
         if resolutions:
             self._cached_video_resolutions = resolutions
-            # If current format is MP4, update the dropdown on the main thread
-            self.after(0, self._refresh_video_resolutions)
+            self._probe_error_message = None
+        else:
+            self._probe_error_message = error_message or "Formats unavailable"
+            if "cookies" in self._probe_error_message.lower() or "verification" in self._probe_error_message.lower() or "bot" in self._probe_error_message.lower():
+                self._cached_video_resolutions = ["[ Cookies Required ]"]
+            else:
+                self._cached_video_resolutions = ["[ Formats Unavailable ]"]
+        self.after(0, self._refresh_video_resolutions)
 
     def _refresh_video_resolutions(self):
         if self.format_segmented.get() == MediaFormat.MP4.value:
@@ -293,6 +310,11 @@ class DownloadPanel(ctk.CTkFrame):
     def _on_format_changed(self, value: str):
         config_manager.update(default_format=value)
         self._update_quality_ui()
+
+    def set_selected_format(self, media_format: MediaFormat):
+        """Programmatically sets format segmented button and updates quality UI."""
+        self.format_segmented.set(media_format.value)
+        self._on_format_changed(media_format.value)
 
     def _update_quality_ui(self):
         fmt = self.format_segmented.get()
@@ -313,14 +335,24 @@ class DownloadPanel(ctk.CTkFrame):
         self._update_download_button_text()
 
     def _update_download_button_text(self):
+        if self._is_downloading:
+            self.download_btn.configure(text="Downloading...", state="normal")
+            return
+
         fmt = self.format_segmented.get()
         q = self.quality_option.get()
-        # Clean quality preview
+
+        if fmt == MediaFormat.MP4.value and self._cached_video_resolutions and self._cached_video_resolutions[0].startswith("["):
+            # Format probe indicated an honest error or restriction (NO fake fallbacks)
+            self.download_btn.configure(
+                text=f"⚠️ {self._cached_video_resolutions[0]}",
+                state="disabled",
+            )
+            return
+
+        self.download_btn.configure(state="normal" if self.selected_result else "disabled")
         q_preview = q.split()[0] if q else ""
-        if self._is_downloading:
-            self.download_btn.configure(text="Downloading...")
-        else:
-            self.download_btn.configure(text=f"⬇ Download {fmt} ({q_preview})")
+        self.download_btn.configure(text=f"⬇ Download {fmt} ({q_preview})")
 
     def _browse_directory(self):
         chosen = filedialog.askdirectory(

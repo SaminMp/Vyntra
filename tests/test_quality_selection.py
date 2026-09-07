@@ -114,13 +114,14 @@ class TestSearchServiceResolutionExtraction(unittest.TestCase):
         self.assertEqual(resolutions, ["Best (Auto)", "1080p (FHD)", "720p (HD)", "360p", "240p"])
 
     @patch("yt_dlp.YoutubeDL")
-    def test_get_available_resolutions_fallback_on_error(self, mock_ydl_class):
+    def test_get_available_resolutions_empty_on_error(self, mock_ydl_class):
+        """Verifies that no fake fallbacks (e.g. 1080p, 720p) are returned when format probing fails."""
         mock_ydl = MagicMock()
         mock_ydl_class.return_value.__enter__.return_value = mock_ydl
         mock_ydl.extract_info.side_effect = RuntimeError("Network error")
 
         resolutions = search_service.get_available_resolutions("dummy_fail_id")
-        self.assertEqual(resolutions, ["Best (Auto)", "1080p", "720p", "480p", "360p"])
+        self.assertEqual(resolutions, [])
 
 
 class TestPlayerModalArchitecture(unittest.TestCase):

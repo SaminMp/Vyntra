@@ -9,6 +9,7 @@ import yt_dlp
 
 from vyntra.config import config_manager
 from vyntra.models import SearchResult
+from vyntra.services.youtube_service import youtube_service
 from vyntra.utils.formatters import format_duration, format_view_count
 from vyntra.utils.logger import logger
 
@@ -157,82 +158,29 @@ class SearchService:
 
     def get_available_resolutions(self, video_id_or_url: str) -> List[str]:
         """
-        Probes the video for available video stream resolutions.
+        Probes the video for available video stream resolutions using the unified YouTube service.
         Returns a sorted list of human-friendly labels, e.g.:
         ['Best (Auto)', '2160p (4K)', '1440p (2K)', '1080p (FHD)', '720p (HD)', '480p', '360p']
+        Never returns fake fallbacks when probing fails.
         """
-        if not hasattr(self, "_resolution_cache"):
-            self._resolution_cache = {}
-
-        url = video_id_or_url if video_id_or_url.startswith("http") else f"https://www.youtube.com/watch?v={video_id_or_url}"
-
-        if url in self._resolution_cache:
-            return self._resolution_cache[url]
-
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "socket_timeout": 8,
-        }
-
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if not info:
-                    return ["Best (Auto)", "1080p", "720p", "480p", "360p"]
-
-                formats = info.get("formats", [])
-                heights = set()
-                for f in formats:
-                    h = f.get("height")
-                    vcodec = f.get("vcodec")
-                    if h and vcodec and vcodec != "none":
-                        heights.add(int(h))
-
-                if not heights:
-                    return ["Best (Auto)", "1080p", "720p", "480p", "360p"]
-
-                sorted_heights = sorted(heights, reverse=True)
-                labels = ["Best (Auto)"]
-                for h in sorted_heights:
-                    if h >= 2160:
-                        labels.append(f"{h}p (4K)")
-                    elif h >= 1440:
-                        labels.append(f"{h}p (2K)")
-                    elif h >= 1080:
-                        labels.append(f"{h}p (FHD)")
-                    elif h >= 720:
-                        labels.append(f"{h}p (HD)")
-                    elif h >= 480:
-                        labels.append(f"{h}p (SD)")
-                    elif h >= 144:
-                        labels.append(f"{h}p")
-
-                # Remove duplicates while preserving order
-                seen = set()
-                unique_labels = []
-                for lbl in labels:
-                    if lbl not in seen:
-                        seen.add(lbl)
-                        unique_labels.append(lbl)
-
-                self._resolution_cache[url] = unique_labels
-                return unique_labels
-
-        except Exception as e:
-            logger.warning("Could not probe video resolutions: %s", e)
-            return ["Best (Auto)", "1080p", "720p", "480p", "360p"]
+        resolutions, _ = youtube_service.get_available_resolutions(video_id_or_url)
+        return resolutions
 
     def get_available_resolutions_async(
         self,
         video_id_or_url: str,
-        on_result: Callable[[List[str]], None],
+        on_result: Callable[..., None],
     ) -> None:
-        """Asynchronously probes available resolutions on a worker thread."""
+        """
+        Asynchronously probes available resolutions on a worker thread.
+        Supports both on_result(resolutions) and on_result(resolutions, error_message).
+        """
         def _worker():
-            res = self.get_available_resolutions(video_id_or_url)
-            on_result(res)
+            resolutions, err_msg = youtube_service.get_available_resolutions(video_id_or_url)
+            try:
+                on_result(resolutions, err_msg)
+            except TypeError:
+                on_result(resolutions)
 
         self._executor.submit(_worker)
 

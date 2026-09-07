@@ -13,13 +13,16 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 import urllib.parse
 import yt_dlp
 
+from vyntra.config import config_manager
 from vyntra.models import SearchResult
 from vyntra.services.auth_service import auth_service
 from vyntra.services.ffmpeg_service import ffmpeg_service
+from vyntra.services.youtube_service import youtube_service
+from vyntra.utils.filename import sanitize_filename
 from vyntra.utils.logger import logger
 
 
@@ -712,12 +715,10 @@ class StreamService:
         Extracts direct video stream URL, audio stream URL, and headers using yt-dlp.
         Returns (video_url, audio_url, headers, duration_secs, title, channel).
         """
-        ydl_opts = {
-            "quiet": True,
+        ydl_opts = youtube_service.get_base_ydl_options(purpose="playback")
+        ydl_opts.update({
             "skip_download": True,
-            "no_warnings": True,
-        }
-        ydl_opts.update(auth_service.get_ydl_cookie_opts())
+        })
 
         url = video_id_or_url if video_id_or_url.startswith("http") else f"https://www.youtube.com/watch?v={video_id_or_url}"
         logger.info("Extracting stream URLs for: %s", url)
@@ -736,37 +737,55 @@ class StreamService:
             # 1. Prefer combined progressive MP4 (720p/360p) if available
             v_url = None
             a_url = None
-
+            best_v = None
             for f in formats:
-                if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("protocol") == "https" and f.get("ext") == "mp4":
+                if f.get("ext") == "mp4" and f.get("vcodec") != "none" and f.get("acodec") != "none":
                     v_url = f.get("url")
-                    a_url = f.get("url")
+                    a_url = v_url
+                    logger.info("Found direct progressive stream: %sp (%s)", f.get("height"), f.get("ext"))
                     break
 
-            # 2. Otherwise pick best separate video MP4 and best separate audio
+            # 2. Otherwise find best MP4 video stream <= 720p
             if not v_url:
-                for f in reversed(formats):
-                    if not v_url and f.get("vcodec") != "none" and f.get("protocol") == "https" and f.get("ext") == "mp4":
-                        v_url = f.get("url")
-                    if not a_url and f.get("vcodec") == "none" and f.get("acodec") != "none" and f.get("protocol") == "https":
-                        a_url = f.get("url")
-                    if v_url and a_url:
-                        break
+                best_v = None
+                best_h = 0
+                for f in formats:
+                    if f.get("vcodec") != "none" and f.get("acodec") == "none":
+                        h = f.get("height") or 0
+                        if 0 < h <= 720 and h > best_h:
+                            best_h = h
+                            best_v = f.get("url")
+                v_url = best_v
 
-            # Fallback if MP4 video not found: pick any video format
-            if not v_url:
-                for f in reversed(formats):
-                    if f.get("vcodec") != "none" and f.get("protocol") == "https":
-                        v_url = f.get("url")
-                        break
+            # 3. Find best audio stream (m4a preferred)
+            if not a_url or a_url == v_url and not best_v:
+                for f in formats:
+                    if f.get("acodec") != "none" and f.get("vcodec") == "none":
+                        if f.get("ext") == "m4a":
+                            a_url = f.get("url")
+                            break
+                        elif not a_url:
+                            a_url = f.get("url")
 
-            if not v_url:
-                raise RuntimeError("No compatible video stream found for this video.")
+            # Fallback to direct URL if nothing found
+            if not v_url and formats:
+                v_url = formats[-1].get("url")
+            if not a_url and formats:
+                a_url = formats[0].get("url")
 
-            if not a_url:
-                a_url = v_url  # Single stream fallback
+            return (v_url or "", a_url or "", headers, duration, title, channel)
 
-            return (v_url, a_url, headers, duration, title, channel)
+    def prepare_video_for_playback(
+        self,
+        result: SearchResult,
+        on_ready: Callable[[str, int], None],
+        on_error: Callable[[Exception], None],
+    ) -> None:
+        """
+        Prepares video media for playback using the centralized YouTubeService.
+        Calls on_ready(local_file_path, duration) when ready, or on_error(exception) on failure.
+        """
+        youtube_service.prepare_playback_stream(result, on_ready, on_error)
 
     def stop_playback(self) -> None:
         """Terminates active FFmpeg stream processes."""

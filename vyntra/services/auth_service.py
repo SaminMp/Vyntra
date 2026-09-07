@@ -62,11 +62,10 @@ class AuthService:
 
     def get_ydl_cookie_opts(self) -> dict:
         """
-        Returns options for yt-dlp.
-        Note: Google OAuth 2.0 API tokens (Bearer ya29...) are for Google Identity & YouTube Data API.
-        They must not be passed to YouTube's web/player endpoints, which reject them with HTTP 403.
+        Returns options for yt-dlp from the centralized extraction service.
         """
-        return {}
+        from vyntra.services.youtube_service import youtube_service
+        return youtube_service.get_base_ydl_options()
 
     def test_connection(self) -> Tuple[bool, str]:
         """
@@ -75,26 +74,9 @@ class AuthService:
         return auth_manager.test_connection()
 
     def translate_error(self, err: Exception) -> str:
-        """Translates raw exceptions into actionable human guidance."""
-        raw = str(err).strip()
-
-        if "Requested format is not available" in raw or "format is not available" in raw:
-            return "Vyntra could not find a compatible format for this video."
-        if "Sign in to confirm you’re not a bot" in raw or "confirm you're not a bot" in raw:
-            return (
-                "YouTube requires sign-in verification. Click 'Sign In with Google' in Settings (⚙️) "
-                "or the header account badge to connect your YouTube account."
-            )
-        if "Private video" in raw:
-            return "This video is private or restricted and cannot be accessed."
-        if "This video is unavailable" in raw or "Video unavailable" in raw:
-            return "This video is unavailable or has been removed from YouTube."
-        if "HTTP Error 429" in raw or "Too Many Requests" in raw:
-            return "YouTube is rate-limiting requests. Please reconnect your YouTube account in Settings."
-        if "network" in raw.lower() or "timed out" in raw.lower() or "connection" in raw.lower():
-            return "Network connection issue. Please check your internet connection."
-
-        return raw.replace("ERROR: [youtube]", "").strip()
+        """Translates raw exceptions into actionable human guidance via YouTubeService."""
+        from vyntra.services.youtube_service import youtube_service
+        return youtube_service.classify_error(err)
 
 
 # Global singleton instance
