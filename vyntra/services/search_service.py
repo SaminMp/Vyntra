@@ -155,6 +155,88 @@ class SearchService:
             publish_date=entry.get("upload_date", ""),
         )
 
+    def get_available_resolutions(self, video_id_or_url: str) -> List[str]:
+        """
+        Probes the video for available video stream resolutions.
+        Returns a sorted list of human-friendly labels, e.g.:
+        ['Best (Auto)', '2160p (4K)', '1440p (2K)', '1080p (FHD)', '720p (HD)', '480p', '360p']
+        """
+        if not hasattr(self, "_resolution_cache"):
+            self._resolution_cache = {}
+
+        url = video_id_or_url if video_id_or_url.startswith("http") else f"https://www.youtube.com/watch?v={video_id_or_url}"
+
+        if url in self._resolution_cache:
+            return self._resolution_cache[url]
+
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "socket_timeout": 8,
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    return ["Best (Auto)", "1080p", "720p", "480p", "360p"]
+
+                formats = info.get("formats", [])
+                heights = set()
+                for f in formats:
+                    h = f.get("height")
+                    vcodec = f.get("vcodec")
+                    if h and vcodec and vcodec != "none":
+                        heights.add(int(h))
+
+                if not heights:
+                    return ["Best (Auto)", "1080p", "720p", "480p", "360p"]
+
+                sorted_heights = sorted(heights, reverse=True)
+                labels = ["Best (Auto)"]
+                for h in sorted_heights:
+                    if h >= 2160:
+                        labels.append(f"{h}p (4K)")
+                    elif h >= 1440:
+                        labels.append(f"{h}p (2K)")
+                    elif h >= 1080:
+                        labels.append(f"{h}p (FHD)")
+                    elif h >= 720:
+                        labels.append(f"{h}p (HD)")
+                    elif h >= 480:
+                        labels.append(f"{h}p (SD)")
+                    elif h >= 144:
+                        labels.append(f"{h}p")
+
+                # Remove duplicates while preserving order
+                seen = set()
+                unique_labels = []
+                for lbl in labels:
+                    if lbl not in seen:
+                        seen.add(lbl)
+                        unique_labels.append(lbl)
+
+                self._resolution_cache[url] = unique_labels
+                return unique_labels
+
+        except Exception as e:
+            logger.warning("Could not probe video resolutions: %s", e)
+            return ["Best (Auto)", "1080p", "720p", "480p", "360p"]
+
+    def get_available_resolutions_async(
+        self,
+        video_id_or_url: str,
+        on_result: Callable[[List[str]], None],
+    ) -> None:
+        """Asynchronously probes available resolutions on a worker thread."""
+        def _worker():
+            res = self.get_available_resolutions(video_id_or_url)
+            on_result(res)
+
+        self._executor.submit(_worker)
+
 
 # Global singleton instance
 search_service = SearchService()
+

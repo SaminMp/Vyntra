@@ -243,16 +243,21 @@ class SetupWizard(ctk.CTkToplevel):
         fmt_lbl = ctk.CTkLabel(pref_card, text="Default Download Format:", font=Theme.FONT_BODY_BOLD, text_color=Theme.TEXT_PRIMARY)
         fmt_lbl.grid(row=2, column=0, padx=16, pady=4, sticky="w")
 
-        self.fmt_seg = ctk.CTkSegmentedButton(pref_card, values=[MediaFormat.MP3.value, MediaFormat.MP4.value], selected_color=Theme.PRIMARY)
+        self.fmt_seg = ctk.CTkSegmentedButton(
+            pref_card,
+            values=[MediaFormat.MP3.value, MediaFormat.MP4.value],
+            selected_color=Theme.PRIMARY,
+            command=self._on_format_changed,
+        )
         self.fmt_seg.set(config_manager.config.default_format)
         self.fmt_seg.grid(row=2, column=1, padx=16, pady=4, sticky="e")
 
-        q_lbl = ctk.CTkLabel(pref_card, text="Default MP3 Quality:", font=Theme.FONT_BODY_BOLD, text_color=Theme.TEXT_PRIMARY)
-        q_lbl.grid(row=3, column=0, padx=16, pady=(10, 16), sticky="w")
+        self.q_lbl = ctk.CTkLabel(pref_card, text="Default Quality:", font=Theme.FONT_BODY_BOLD, text_color=Theme.TEXT_PRIMARY)
+        self.q_lbl.grid(row=3, column=0, padx=16, pady=(10, 16), sticky="w")
 
-        self.q_opt = ctk.CTkOptionMenu(pref_card, values=["192 kbps", "256 kbps", "320 kbps (Best)"], fg_color=Theme.BG_MUTED, button_color=Theme.PRIMARY)
-        self.q_opt.set("320 kbps (Best)")
+        self.q_opt = ctk.CTkOptionMenu(pref_card, values=["320 kbps (Best)", "256 kbps", "192 kbps", "128 kbps"], fg_color=Theme.BG_MUTED, button_color=Theme.PRIMARY)
         self.q_opt.grid(row=3, column=1, padx=16, pady=(10, 16), sticky="e")
+        self._on_format_changed(config_manager.config.default_format)
 
         nav_row = ctk.CTkFrame(self.main_container, fg_color="transparent")
         nav_row.pack(side="bottom", fill="x")
@@ -287,20 +292,44 @@ class SetupWizard(ctk.CTkToplevel):
             self.folder_entry.delete(0, "end")
             self.folder_entry.insert(0, chosen)
 
+    def _on_format_changed(self, value: str):
+        if value == MediaFormat.MP3.value:
+            self.q_lbl.configure(text="Default Audio Quality:")
+            self.q_opt.configure(values=["320 kbps (Best)", "256 kbps", "192 kbps", "128 kbps"])
+            self.q_opt.set("320 kbps (Best)")
+        else:
+            self.q_lbl.configure(text="Default Video Quality:")
+            self.q_opt.configure(values=["Best (Auto)", "1080p (FHD)", "720p (HD)", "480p (SD)", "360p"])
+            self.q_opt.set("Best (Auto)")
+
     def _finish_preferences(self):
         folder = self.folder_entry.get().strip() or str(Path.home() / "Downloads" / "Vyntra")
         fmt = self.fmt_seg.get()
-        q_val = "320"
-        if "192" in self.q_opt.get():
-            q_val = "192"
-        elif "256" in self.q_opt.get():
-            q_val = "256"
+        q_str = self.q_opt.get()
 
-        config_manager.update(
-            download_directory=folder,
-            default_format=fmt,
-            audio_quality=q_val,
-        )
+        update_kwargs = {
+            "download_directory": folder,
+            "default_format": fmt,
+        }
+
+        if fmt == MediaFormat.MP3.value:
+            q_val = "320"
+            if "192" in q_str:
+                q_val = "192"
+            elif "256" in q_str:
+                q_val = "256"
+            elif "128" in q_str:
+                q_val = "128"
+            update_kwargs["audio_quality"] = q_val
+        else:
+            v_val = "best"
+            for res in ["1080p", "720p", "480p", "360p"]:
+                if res in q_str.lower():
+                    v_val = res
+                    break
+            update_kwargs["video_quality"] = v_val
+
+        config_manager.update(**update_kwargs)
         self._show_step(4)
 
     # --- STEP 4: READY / FINISH ---

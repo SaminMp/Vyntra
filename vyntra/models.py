@@ -94,6 +94,7 @@ class DownloadTask:
     task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     audio_quality: AudioQuality = AudioQuality.BEST
     video_quality: VideoQuality = VideoQuality.BEST
+    selected_quality: str = "best"
     status: DownloadStatus = DownloadStatus.PENDING
     progress: ProgressInfo = field(default_factory=ProgressInfo)
     output_filepath: Optional[str] = None

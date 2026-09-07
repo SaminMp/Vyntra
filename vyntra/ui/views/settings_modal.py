@@ -120,37 +120,32 @@ class SettingsModal(ctk.CTkToplevel):
             values=[MediaFormat.MP3.value, MediaFormat.MP4.value],
             font=Theme.FONT_BODY,
             selected_color=Theme.PRIMARY,
+            command=self._on_format_toggled,
         )
         self.fmt_segmented.set(config_manager.config.default_format)
         self.fmt_segmented.grid(row=row, column=1, padx=16, pady=4, sticky="e")
         row += 1
 
-        # 3. Audio Bitrate Quality
-        bitrate_label = ctk.CTkLabel(
+        # 3. Dynamic Quality Setting (Audio bitrate or Video resolution)
+        self.quality_label = ctk.CTkLabel(
             self.scroll_frame,
-            text="MP3 Audio Quality:",
+            text="Default Quality:",
             font=Theme.FONT_BODY_BOLD,
             text_color=Theme.TEXT_SECONDARY,
         )
-        bitrate_label.grid(row=row, column=0, padx=16, pady=4, sticky="w")
+        self.quality_label.grid(row=row, column=0, padx=16, pady=4, sticky="w")
 
-        self.bitrate_option = ctk.CTkOptionMenu(
+        self.quality_option = ctk.CTkOptionMenu(
             self.scroll_frame,
-            values=["192 kbps (Standard)", "256 kbps (High)", "320 kbps (Best)"],
+            values=["320 kbps (Best)", "256 kbps (High)", "192 kbps (Standard)", "128 kbps"],
             font=Theme.FONT_BODY,
             fg_color=Theme.BG_MUTED,
             button_color=Theme.PRIMARY,
             button_hover_color=Theme.PRIMARY_HOVER,
             dropdown_fg_color=Theme.BG_CARD,
         )
-        current_bitrate = config_manager.config.audio_quality
-        if current_bitrate == "192":
-            self.bitrate_option.set("192 kbps (Standard)")
-        elif current_bitrate == "256":
-            self.bitrate_option.set("256 kbps (High)")
-        else:
-            self.bitrate_option.set("320 kbps (Best)")
-        self.bitrate_option.grid(row=row, column=1, padx=16, pady=4, sticky="e")
+        self.quality_option.grid(row=row, column=1, padx=16, pady=4, sticky="e")
+        self._on_format_toggled(config_manager.config.default_format)
         row += 1
 
         # 4. Search Results Limit
@@ -360,25 +355,49 @@ class SettingsModal(ctk.CTkToplevel):
             text_color=Theme.SUCCESS if success else Theme.WARNING,
         )
 
+    def _on_format_toggled(self, value: str):
+        if value == MediaFormat.MP3.value:
+            self.quality_label.configure(text="Default Audio Quality:")
+            self.quality_option.configure(values=["320 kbps (Best)", "256 kbps (High)", "192 kbps (Standard)", "128 kbps"])
+            curr = config_manager.config.audio_quality
+            matched = [opt for opt in ["320 kbps (Best)", "256 kbps (High)", "192 kbps (Standard)", "128 kbps"] if curr in opt]
+            self.quality_option.set(matched[0] if matched else "320 kbps (Best)")
+        else:
+            self.quality_label.configure(text="Default Video Quality:")
+            self.quality_option.configure(values=["Best (Auto)", "1080p (FHD)", "720p (HD)", "480p (SD)", "360p"])
+            curr = config_manager.config.video_quality
+            matched = [opt for opt in ["Best (Auto)", "1080p (FHD)", "720p (HD)", "480p (SD)", "360p"] if curr in opt.lower()]
+            self.quality_option.set(matched[0] if matched else "Best (Auto)")
+
     def _save_settings(self):
         dir_val = self.dir_entry.get().strip() or str(Path.home() / "Downloads" / "Vyntra")
         fmt_val = self.fmt_segmented.get()
+        q_str = self.quality_option.get()
 
-        bitrate_str = self.bitrate_option.get()
-        bitrate_val = "320"
-        if "192" in bitrate_str:
-            bitrate_val = "192"
-        elif "256" in bitrate_str:
-            bitrate_val = "256"
+        update_kwargs = {
+            "download_directory": dir_val,
+            "default_format": fmt_val,
+            "max_search_results": int(self.limit_option.get()),
+        }
 
-        limit_val = int(self.limit_option.get())
+        if fmt_val == MediaFormat.MP3.value:
+            bitrate_val = "320"
+            if "192" in q_str:
+                bitrate_val = "192"
+            elif "256" in q_str:
+                bitrate_val = "256"
+            elif "128" in q_str:
+                bitrate_val = "128"
+            update_kwargs["audio_quality"] = bitrate_val
+        else:
+            v_val = "best"
+            for res in ["1080p", "720p", "480p", "360p"]:
+                if res in q_str.lower():
+                    v_val = res
+                    break
+            update_kwargs["video_quality"] = v_val
 
-        config_manager.update(
-            download_directory=dir_val,
-            default_format=fmt_val,
-            audio_quality=bitrate_val,
-            max_search_results=limit_val,
-        )
+        config_manager.update(**update_kwargs)
 
         if self.on_saved:
             self.on_saved()

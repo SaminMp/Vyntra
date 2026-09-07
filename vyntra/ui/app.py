@@ -24,6 +24,7 @@ from vyntra.ui.components.search_bar import SearchBar
 from vyntra.ui.components.status_banner import StatusBanner
 from vyntra.ui.theme import Theme
 from vyntra.ui.views.account_modal import AccountModal
+from vyntra.ui.views.player_modal import VideoPlayerModal
 from vyntra.ui.views.settings_modal import SettingsModal
 from vyntra.ui.views.setup_wizard import SetupWizard
 from vyntra.utils.logger import logger
@@ -43,6 +44,7 @@ class VyntraApp(ctk.CTk):
 
         self._active_task_id: Optional[str] = None
         self._current_search_query: str = ""
+        self._player_modal: Optional[VideoPlayerModal] = None
 
         # Layout Configuration
         self.grid_columnconfigure(0, weight=1)
@@ -231,23 +233,46 @@ class VyntraApp(ctk.CTk):
         self.download_panel.set_selected_result(result)
 
     def _handle_play_video(self, result: SearchResult):
-        """Launches live full video and audio player for selected result."""
+        """Launches live full video and audio player for selected result inside current instance."""
         self.download_panel.set_selected_result(result)
-        self.status_banner.show_info(f"Opening player for '{result.display_title}'...")
-        stream_service.play_video(result)
+        if self._player_modal and self._player_modal.winfo_exists():
+            self._player_modal.lift()
+            self._player_modal.focus_force()
+            self._player_modal.load_video(result)
+        else:
+            self._player_modal = VideoPlayerModal(
+                master=self,
+                result=result,
+                on_close=self._on_player_closed,
+            )
+
+    def _on_player_closed(self):
+        """Callback when the video player modal is closed."""
+        self._player_modal = None
 
     def _on_app_close(self):
-        """Terminates player process, streams, server, and closes window."""
+        """Terminates player modal, streams, server, and closes window."""
         try:
+            if self._player_modal and self._player_modal.winfo_exists():
+                self._player_modal.close()
             stream_service.stop_playback()
             stream_server.stop()
         except Exception:
             pass
         self.destroy()
 
-    def _handle_start_download(self, result: SearchResult, media_format: MediaFormat, save_dir: str):
+    def _handle_start_download(
+        self,
+        result: SearchResult,
+        media_format: MediaFormat,
+        quality: str,
+        save_dir: str,
+    ):
         """Dispatches download job."""
         audio_q_str = config_manager.config.audio_quality
+        if media_format == MediaFormat.MP3 and quality:
+            audio_q_str = quality
+
         audio_quality = AudioQuality.BEST
         if audio_q_str == "192":
             audio_quality = AudioQuality.STANDARD
@@ -259,6 +284,7 @@ class VyntraApp(ctk.CTk):
             format=media_format,
             save_directory=save_dir,
             audio_quality=audio_quality,
+            selected_quality=quality or "best",
         )
         self._active_task_id = task.task_id
 

@@ -5,6 +5,7 @@ Robust download engine and media conversion service using yt-dlp.
 from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
+import re
 import shutil
 import threading
 from typing import Callable, Dict, Optional
@@ -86,28 +87,8 @@ class DownloadService:
         with self._lock:
             return task_id in self._active_tasks
 
-    def _execute_download(
-        self,
-        task: DownloadTask,
-        on_progress: Callable[[ProgressInfo], None],
-    ) -> str:
-        """Synchronous core download execution using yt-dlp."""
-        task.status = DownloadStatus.CONNECTING
-        progress_info = ProgressInfo(
-            status=DownloadStatus.CONNECTING,
-            status_message="Connecting to YouTube...",
-            filename=task.result.display_title,
-        )
-        on_progress(progress_info)
-
-        # Prepare save folder & base filename
-        save_dir = Path(task.save_directory)
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        target_ext = "mp3" if task.format == MediaFormat.MP3 else "mp4"
-        unique_file_path = get_unique_filepath(save_dir, task.result.display_title, target_ext)
-        out_base_without_ext = str(unique_file_path.with_suffix(""))
-
+    def build_ydl_options(self, task: DownloadTask, out_base_without_ext: str) -> dict:
+        """Builds yt-dlp option dictionary configured for format, quality, metadata and cookies."""
         ffmpeg_status = ffmpeg_service.get_status()
         ffmpeg_bin_dir = str(Path(ffmpeg_status.ffmpeg_path).parent) if ffmpeg_status.ffmpeg_path else None
 
@@ -131,6 +112,11 @@ class DownloadService:
 
         # Format & Post-Processor configuration
         if task.format == MediaFormat.MP3:
+            # Resolve bitrate (e.g. "320 kbps" -> "320")
+            raw_q = str(getattr(task, "selected_quality", "") or getattr(task.audio_quality, "value", "320"))
+            digits = "".join(filter(str.isdigit, raw_q))
+            bitrate = digits if digits in ("128", "192", "256", "320") else "320"
+
             if ffmpeg_status.is_available:
                 ydl_opts.update({
                     "format": "bestaudio/best",
@@ -138,7 +124,7 @@ class DownloadService:
                         {
                             "key": "FFmpegExtractAudio",
                             "preferredcodec": "mp3",
-                            "preferredquality": task.audio_quality.value,
+                            "preferredquality": bitrate,
                         },
                         {
                             "key": "FFmpegMetadata",
@@ -147,14 +133,28 @@ class DownloadService:
                     ],
                 })
             else:
-                # Fallback without FFmpeg: best native audio container
                 logger.warning("FFmpeg unavailable. Falling back to native audio stream.")
                 ydl_opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
         else:
-            # Video (MP4)
+            # Video (MP4) - Resolve requested height with fallback
+            raw_q = str(getattr(task, "selected_quality", "") or getattr(task.video_quality, "value", "best")).lower()
+            height_match = re.search(r"(\d{3,4})", raw_q)
+            target_height = int(height_match.group(1)) if height_match else None
+
             if ffmpeg_status.is_available:
+                if target_height:
+                    # Dynamically target <= height with fallback to closest available resolution
+                    format_spec = (
+                        f"bestvideo[height<={target_height}][ext=mp4]+bestaudio[ext=m4a]/"
+                        f"bestvideo[height<={target_height}]+bestaudio/"
+                        f"best[height<={target_height}][ext=mp4]/"
+                        f"best[height<={target_height}]/best"
+                    )
+                else:
+                    format_spec = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+
                 ydl_opts.update({
-                    "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+                    "format": format_spec,
                     "merge_output_format": "mp4",
                     "postprocessors": [
                         {
@@ -164,9 +164,40 @@ class DownloadService:
                     ],
                 })
             else:
-                # Fallback without FFmpeg: best single container or video stream
                 logger.warning("FFmpeg unavailable. Falling back to native stream without muxing.")
-                ydl_opts["format"] = "best[ext=mp4]/bestvideo[ext=mp4]/bestvideo/best"
+                if target_height:
+                    ydl_opts["format"] = f"best[height<={target_height}][ext=mp4]/best[height<={target_height}]/best"
+                else:
+                    ydl_opts["format"] = "best[ext=mp4]/bestvideo[ext=mp4]/bestvideo/best"
+
+        return ydl_opts
+
+    def _execute_download(
+        self,
+        task: DownloadTask,
+        on_progress: Callable[[ProgressInfo], None],
+    ) -> str:
+        """Synchronous core download execution using yt-dlp."""
+        task.status = DownloadStatus.CONNECTING
+        progress_info = ProgressInfo(
+            status=DownloadStatus.CONNECTING,
+            status_message="Connecting to YouTube...",
+            filename=task.result.display_title,
+        )
+        on_progress(progress_info)
+
+        # Prepare save folder & base filename
+        save_dir = Path(task.save_directory)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        target_ext = "mp3" if task.format == MediaFormat.MP3 else "mp4"
+        unique_file_path = get_unique_filepath(save_dir, task.result.display_title, target_ext)
+        out_base_without_ext = str(unique_file_path.with_suffix(""))
+
+        ffmpeg_status = ffmpeg_service.get_status()
+
+        # Base yt-dlp options
+        ydl_opts = self.build_ydl_options(task, out_base_without_ext)
 
         # Attach progress hook
         def _hook(d: dict):

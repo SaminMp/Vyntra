@@ -4,7 +4,6 @@ Live On-The-Fly Transmuxing and Local Streaming Service for Full Video Playback.
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import multiprocessing
 from pathlib import Path
 import platform
 import re
@@ -702,29 +701,10 @@ class StreamServer:
 stream_server = StreamServer()
 
 
-def _run_player_window(port: int, title: str):
-    """Subprocess runner for the dedicated hardware-accelerated player window."""
-    try:
-        import webview
-        url = f"http://127.0.0.1:{port}/player"
-        window = webview.create_window(
-            title=f"Vyntra Player - {title[:50]}",
-            url=url,
-            width=900,
-            height=600,
-            resizable=True,
-            background_color="#0B0F19",
-        )
-        webview.start()
-    except Exception as e:
-        print(f"Player window error: {e}", file=sys.stderr)
-
-
 class StreamService:
-    """Orchestrates stream extraction, transmuxing, and playback window."""
+    """Orchestrates stream extraction and transmuxing."""
 
     def __init__(self):
-        self._current_player_proc: Optional[multiprocessing.Process] = None
         self._lock = threading.Lock()
 
     def extract_stream_urls(self, video_id_or_url: str) -> Tuple[str, str, dict, int, str, str]:
@@ -788,48 +768,9 @@ class StreamService:
 
             return (v_url, a_url, headers, duration, title, channel)
 
-    def play_video(self, result: SearchResult) -> None:
-        """Extracts streams and launches the full player window."""
-        self.stop_playback()
-
-        def _worker():
-            try:
-                v_url, a_url, headers, duration, title, channel = self.extract_stream_urls(result.url or result.video_id)
-                stream_state.update(
-                    video_id=result.video_id,
-                    title=result.display_title or title,
-                    channel=result.channel or channel,
-                    duration=duration or result.duration_seconds,
-                    video_url=v_url,
-                    audio_url=a_url,
-                    headers=headers,
-                )
-
-                port = stream_server.start()
-
-                with self._lock:
-                    self._current_player_proc = multiprocessing.Process(
-                        target=_run_player_window,
-                        args=(port, result.display_title),
-                        daemon=True,
-                    )
-                    self._current_player_proc.start()
-
-            except Exception as err:
-                logger.error("Failed to start video playback for '%s': %s", result.title, err)
-
-        threading.Thread(target=_worker, daemon=True).start()
-
     def stop_playback(self) -> None:
-        """Terminates active player window and FFmpeg stream processes."""
+        """Terminates active FFmpeg stream processes."""
         stream_state.stop_active_ffmpeg()
-        with self._lock:
-            if self._current_player_proc is not None:
-                if self._current_player_proc.is_alive():
-                    logger.info("Terminating active player window.")
-                    self._current_player_proc.terminate()
-                    self._current_player_proc.join(timeout=1.0)
-                self._current_player_proc = None
 
 
 # Global singleton instance
