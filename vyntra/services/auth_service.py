@@ -63,15 +63,9 @@ class AuthService:
     def get_ydl_cookie_opts(self) -> dict:
         """
         Returns options for yt-dlp.
+        Note: Google OAuth 2.0 API tokens (Bearer ya29...) are for Google Identity & YouTube Data API.
+        They must not be passed to YouTube's web/player endpoints, which reject them with HTTP 403.
         """
-        token = auth_manager.get_access_token()
-        if token:
-            # Pass OAuth authorization header where supported
-            return {
-                "http_headers": {
-                    "Authorization": f"Bearer {token}",
-                }
-            }
         return {}
 
     def test_connection(self) -> Tuple[bool, str]:
@@ -84,6 +78,8 @@ class AuthService:
         """Translates raw exceptions into actionable human guidance."""
         raw = str(err).strip()
 
+        if "Requested format is not available" in raw or "format is not available" in raw:
+            return "Vyntra could not find a compatible format for this video."
         if "Sign in to confirm you’re not a bot" in raw or "confirm you're not a bot" in raw:
             return (
                 "YouTube requires sign-in verification. Click 'Sign In with Google' in Settings (⚙️) "

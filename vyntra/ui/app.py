@@ -41,6 +41,7 @@ class VyntraApp(ctk.CTk):
         self.geometry("960x780")
         self.minsize(820, 600)
         self.configure(fg_color=Theme.BG_MAIN)
+        self._apply_window_icon()
 
         self._active_task_id: Optional[str] = None
         self._current_search_query: str = ""
@@ -66,6 +67,22 @@ class VyntraApp(ctk.CTk):
         # First run: Show Setup Wizard if not completed
         if not config_manager.config.setup_completed:
             self.after(250, self._open_setup_wizard)
+
+    def _apply_window_icon(self):
+        """Sets the application window icon if available."""
+        candidates = []
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            candidates.append(Path(sys._MEIPASS) / "assets" / "icon.ico")
+        candidates.append(Path(__file__).resolve().parent.parent.parent / "assets" / "icon.ico")
+        candidates.append(Path.cwd() / "assets" / "icon.ico")
+
+        for icon_path in candidates:
+            if icon_path.is_file():
+                try:
+                    self.iconbitmap(str(icon_path))
+                    break
+                except Exception as e:
+                    logger.debug("Failed to set window icon from %s: %s", icon_path, e)
 
     def _create_header(self):
         """Top branding header with navigation controls and YouTube account status."""

@@ -19,7 +19,7 @@ import keyring
 import requests
 
 from vyntra.config import config_manager
-from vyntra.developer_config import load_developer_oauth_client
+from vyntra.developer_config import load_developer_oauth_client, mask_client_id
 from vyntra.utils.logger import logger
 
 KEYRING_SERVICE_NAME = "Vyntra_YouTube_Auth"
@@ -95,13 +95,15 @@ class YouTubeAuthManager:
         self._current_tokens: Optional[Dict] = None
         self._user_profile: Optional[Dict] = None
         self._lock = threading.Lock()
+        # Log diagnostic status on startup
+        load_developer_oauth_client(verbose_log=True)
         self.load_credentials()
 
     def get_client_credentials(self) -> Tuple[str, str]:
         """
         Retrieves the Google Cloud Desktop OAuth Client credentials.
         """
-        client_id, client_secret, source = load_developer_oauth_client()
+        client_id, client_secret, _, _ = load_developer_oauth_client()
         return client_id, client_secret
 
     def has_valid_client_id(self) -> bool:
@@ -123,13 +125,10 @@ class YouTubeAuthManager:
         client_id, client_secret = self.get_client_credentials()
 
         if not self.has_valid_client_id():
-            logger.warning(
-                "[OAuth] Google Cloud Desktop Client ID not configured. "
-                "Please add your Google Cloud Desktop Client ID to credentials.json or set VYNTRA_GOOGLE_CLIENT_ID."
-            )
+            logger.warning("[OAuth] Google Cloud Desktop Client ID not configured.")
             on_complete(
                 False,
-                "Google Cloud Client ID required. Please configure credentials.json or VYNTRA_GOOGLE_CLIENT_ID.",
+                "Sign-in service is currently unavailable. Please try again later.",
                 None,
             )
             return
@@ -139,7 +138,7 @@ class YouTubeAuthManager:
                 server = http.server.HTTPServer(("127.0.0.1", 0), _OAuthCallbackHandler)
                 server.query_params = {}
                 port = server.server_address[1]
-                redirect_uri = f"http://127.0.0.1:{port}/callback"
+                redirect_uri = f"http://127.0.0.1:{port}/"
 
                 verifier, challenge = self._generate_pkce()
                 state = secrets.token_urlsafe(32)
@@ -157,8 +156,8 @@ class YouTubeAuthManager:
                 }
                 auth_url = f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(query)}"
 
-                # Log non-sensitive OAuth request parameters
-                masked_client_id = f"{client_id[:8]}...{client_id[-12:]}" if len(client_id) > 20 else client_id
+                # Log non-sensitive OAuth request parameters with masked client ID
+                masked_client_id = mask_client_id(client_id)
                 logger.info(
                     "[OAuth] Starting Authorization Request:\n"
                     "  • Client ID: %s\n"

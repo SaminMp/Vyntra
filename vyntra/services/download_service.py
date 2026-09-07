@@ -146,12 +146,17 @@ class DownloadService:
                     # Dynamically target <= height with fallback to closest available resolution
                     format_spec = (
                         f"bestvideo[height<={target_height}][ext=mp4]+bestaudio[ext=m4a]/"
+                        f"bestvideo[height<={target_height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
                         f"bestvideo[height<={target_height}]+bestaudio/"
                         f"best[height<={target_height}][ext=mp4]/"
                         f"best[height<={target_height}]/best"
                     )
                 else:
-                    format_spec = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+                    format_spec = (
+                        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+                        "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+                        "bestvideo+bestaudio/best[ext=mp4]/best"
+                    )
 
                 ydl_opts.update({
                     "format": format_spec,
@@ -168,7 +173,7 @@ class DownloadService:
                 if target_height:
                     ydl_opts["format"] = f"best[height<={target_height}][ext=mp4]/best[height<={target_height}]/best"
                 else:
-                    ydl_opts["format"] = "best[ext=mp4]/bestvideo[ext=mp4]/bestvideo/best"
+                    ydl_opts["format"] = "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
 
         return ydl_opts
 
@@ -198,6 +203,30 @@ class DownloadService:
 
         # Base yt-dlp options
         ydl_opts = self.build_ydl_options(task, out_base_without_ext)
+
+        # Safe diagnostic format inspection logging
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl_probe:
+                meta = ydl_probe.extract_info(task.result.url, download=False)
+                if meta:
+                    v_h = meta.get("height")
+                    v_res = f"{v_h}p" if v_h else (meta.get("resolution") or "audio only")
+                    v_codec = meta.get("vcodec") or "none"
+                    a_codec = meta.get("acodec") or "none"
+                    abr = meta.get("abr")
+                    a_str = f"{int(abr)}kbps" if abr else a_codec
+                    logger.info(
+                        "[Download] Requested output: %s\n"
+                        "[Download] Selected video: %s\n"
+                        "[Download] Selected audio: %s\n"
+                        "[Download] Container: %s",
+                        task.format.value,
+                        v_res,
+                        a_str,
+                        target_ext,
+                    )
+        except Exception as probe_err:
+            logger.debug("Format pre-inspection skipped: %s", probe_err)
 
         # Attach progress hook
         def _hook(d: dict):

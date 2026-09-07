@@ -5,3 +5,5 @@ requests>=2.31.0
 pywebview>=5.0.0
 keyring>=25.0.0
 ffpyplayer>=4.5.0
+pyinstaller>=6.0.0
+
