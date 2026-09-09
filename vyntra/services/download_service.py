@@ -143,6 +143,8 @@ class DownloadService:
         except Exception as probe_err:
             logger.debug("Format pre-inspection skipped: %s", probe_err)
 
+        final_output_path = [None]
+
         # Attach progress hook
         def _hook(d: dict):
             if task.is_cancelled:
@@ -173,6 +175,10 @@ class DownloadService:
 
             elif status_str == "finished":
                 task.status = DownloadStatus.CONVERTING
+                fn = d.get("filename")
+                if fn and Path(fn).is_file():
+                    final_output_path[0] = Path(fn).resolve()
+
                 prog = ProgressInfo(
                     status=DownloadStatus.CONVERTING,
                     percent=100.0,
@@ -188,18 +194,40 @@ class DownloadService:
 
         ydl_opts["progress_hooks"] = [_hook]
 
+        def _pp_hook(d: dict):
+            if d.get("status") == "finished":
+                info_dict = d.get("info_dict") or {}
+                fp = info_dict.get("filepath") or info_dict.get("_filename")
+                if fp and Path(fp).is_file():
+                    final_output_path[0] = Path(fp).resolve()
+
+        ydl_opts["postprocessor_hooks"] = [_pp_hook]
+
+        configured_dir = Path(task.save_directory).resolve()
+        logger.info("[Download] Configured directory: %s", configured_dir)
         logger.info("Starting download for '%s' to '%s'", task.result.title, unique_file_path)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([task.result.url])
 
         # Resolve final produced file path
-        expected_output = unique_file_path
-        if not expected_output.exists():
-            # If native fallback created .m4a or .webm
-            candidates = list(save_dir.glob(f"{sanitize_filename(task.result.display_title)}*.*"))
-            if candidates:
-                expected_output = candidates[0]
+        if final_output_path[0] and final_output_path[0].is_file():
+            expected_output = final_output_path[0]
+        elif unique_file_path.is_file():
+            expected_output = unique_file_path.resolve()
+        else:
+            # Look for matching file in save_dir
+            candidates = sorted(
+                save_dir.glob(f"{sanitize_filename(task.result.display_title)}*.*"),
+                key=lambda p: p.stat().st_mtime if p.is_file() else 0,
+                reverse=True
+            )
+            valid_candidates = [p for p in candidates if p.suffix not in (".part", ".ytdl", ".tmp")]
+            if valid_candidates:
+                expected_output = valid_candidates[0].resolve()
+            else:
+                expected_output = unique_file_path.resolve()
 
+        logger.info("[Download] Actual output file: %s", expected_output)
         logger.info("Download completed successfully: %s", expected_output)
         return str(expected_output)
 

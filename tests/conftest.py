@@ -1,16 +1,17 @@
-#!/usr/bin/env python3
 """
-Launcher script for Vyntra.
+Pytest configuration and fixture setup for Vyntra tests.
 """
 
 import os
 import sys
-
-# Ensure current directory is in Python module search path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-# Ensure TCL_LIBRARY and TK_LIBRARY are configured for Windows virtual environments
 from pathlib import Path
+
+# Ensure sys.path includes workspace root
+WORKSPACE_ROOT = Path(__file__).parent.parent.resolve()
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
+
+# Ensure TCL_LIBRARY and TK_LIBRARY are set for Windows virtual environments
 base_tcl = Path(sys.base_prefix) / "tcl"
 if base_tcl.exists():
     for p in base_tcl.glob("tcl8.*"):
@@ -21,8 +22,3 @@ if base_tcl.exists():
         if (p / "tk.tcl").exists():
             os.environ.setdefault("TK_LIBRARY", str(p))
             break
-
-from vyntra.main import main
-
-if __name__ == "__main__":
-    main()

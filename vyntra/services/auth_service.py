@@ -60,6 +60,23 @@ class AuthService:
                 "Not signed in to Google / YouTube (Guest mode)",
             )
 
+    def get_media_access_status(self) -> Tuple[str, str, str]:
+        """
+        Returns (status_key, display_label, details_message) for YouTube Media Session.
+        Guarantees zero leakage of cookies or secrets.
+        """
+        from vyntra.services.youtube_service import youtube_service
+        mode_label, detail_str = youtube_service.get_media_auth_summary()
+        status = getattr(config_manager.config, "youtube_media_status", "unconfigured")
+
+        if status == "ready":
+            return ("ready", f"● Media Access: {mode_label} (Ready)", detail_str)
+        elif status == "failed":
+            msg = getattr(config_manager.config, "youtube_media_status_message", "Setup required")
+            return ("failed", f"⚠️ Media Access: {mode_label} (Action Needed)", msg)
+        else:
+            return ("unconfigured", f"○ Media Access: {mode_label}", detail_str)
+
     def get_ydl_cookie_opts(self) -> dict:
         """
         Returns options for yt-dlp from the centralized extraction service.
@@ -69,9 +86,23 @@ class AuthService:
 
     def test_connection(self) -> Tuple[bool, str]:
         """
-        Tests whether the current OAuth authentication session is valid with Google and YouTube.
+        Tests both Google Account OAuth Identity and YouTube Media Access extraction.
+        Returns overall success and a clear multi-line report distinguishing both layers.
         """
-        return auth_manager.test_connection()
+        from vyntra.services.youtube_service import youtube_service
+
+        # 1. Google OAuth Identity check
+        if auth_manager.is_authenticated():
+            google_ok, google_msg = auth_manager.test_connection()
+        else:
+            google_ok, google_msg = (False, "○ Google Account: Not connected (Optional)")
+
+        # 2. YouTube Media Access check
+        media_ok, media_msg = youtube_service.test_youtube_media_access()
+
+        lines = [google_msg, media_msg]
+        overall_ok = media_ok or (google_ok and media_ok)
+        return (overall_ok, "\n".join(lines))
 
     def translate_error(self, err: Exception) -> str:
         """Translates raw exceptions into actionable human guidance via YouTubeService."""

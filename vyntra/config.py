@@ -4,12 +4,39 @@ Configuration manager for Vyntra with persistent JSON storage.
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from vyntra.models import AudioQuality, MediaFormat, VideoQuality
 from vyntra.utils.logger import logger
+
+
+def get_app_data_dir() -> Path:
+    """
+    Resolves standard OS-specific user application data directory.
+    - Windows: %APPDATA%/Vyntra (e.g. C:\\Users\\<user>\\AppData\\Roaming\\Vyntra)
+    - macOS: ~/Library/Application Support/Vyntra
+    - Linux / Other: $XDG_CONFIG_HOME/vyntra or ~/.config/vyntra
+    Maintains backward compatibility: if ~/.vyntra already exists, keeps using it.
+    """
+    legacy_dir = Path.home() / ".vyntra"
+    if legacy_dir.is_dir():
+        return legacy_dir
+
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "Vyntra"
+        return Path.home() / "AppData" / "Roaming" / "Vyntra"
+    elif sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Vyntra"
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        if xdg:
+            return Path(xdg) / "vyntra"
+        return Path.home() / ".config" / "vyntra"
 
 
 @dataclass
@@ -27,6 +54,14 @@ class AppConfig:
     auth_status: str = "disconnected"   # "connected", "disconnected", "expired"
     setup_completed: bool = False
 
+    # YouTube Media Access Authentication (cleanly separated from Google OAuth Identity)
+    youtube_media_auth_mode: str = "none"   # "none", "browser", "cookie_file"
+    youtube_media_browser: str = "firefox"  # "firefox", "chrome", "edge", "brave", "opera"
+    youtube_media_browser_profile: str = ""
+    youtube_media_custom_cookie_path: str = ""
+    youtube_media_status: str = "unconfigured"  # "ready", "unconfigured", "failed"
+    youtube_media_status_message: str = ""
+
     def __post_init__(self):
         if not self.download_directory:
             # Default to ~/Downloads/Vyntra or ~/Downloads
@@ -39,7 +74,7 @@ class ConfigManager:
 
     def __init__(self, config_dir: Optional[Path] = None):
         if config_dir is None:
-            self.config_dir = Path.home() / ".vyntra"
+            self.config_dir = get_app_data_dir()
         else:
             self.config_dir = Path(config_dir)
 

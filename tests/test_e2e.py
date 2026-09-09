@@ -35,12 +35,14 @@ class TestVyntraE2E(unittest.TestCase):
             url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         )
 
-        app._handle_result_selected(mock_result)
-        self.assertEqual(app.download_panel.selected_result, mock_result)
-        self.assertIn("Never Gonna Give You Up", app.download_panel.selected_title_label.cget("text"))
+        from unittest.mock import patch
+        with patch.object(search_service, "get_available_resolutions_async"):
+            app._handle_result_selected(mock_result)
+            self.assertEqual(app.download_panel.selected_result, mock_result)
+            self.assertIn("Never Gonna Give You Up", app.download_panel.selected_title_label.cget("text"))
 
         # Close Tkinter instance cleanly
-        app.destroy()
+        app._on_app_close()
 
 
 if __name__ == "__main__":

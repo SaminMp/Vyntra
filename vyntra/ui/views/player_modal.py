@@ -17,6 +17,9 @@ try:
 except ImportError:
     MediaPlayer = None
 
+if MediaPlayer is None:
+    from vyntra.services.media_player import FFmpegMediaPlayer as MediaPlayer
+
 from vyntra.models import SearchResult
 from vyntra.services.stream_service import stream_server, stream_service, stream_state
 from vyntra.ui.theme import Theme
@@ -40,6 +43,7 @@ class VideoPlayerModal(ctk.CTkToplevel):
         self._duration = result.duration_seconds or 0
         self._is_seeking = False
         self._is_fullscreen = False
+        self._is_render_loop_running = False
 
         self.title(f"Vyntra Player - {result.display_title}")
         self.geometry("960x640")
@@ -116,7 +120,7 @@ class VideoPlayerModal(ctk.CTkToplevel):
 
         self.loading_label = ctk.CTkLabel(
             self.video_container,
-            text="Loading the video...",
+            text="Loading video...",
             font=Theme.FONT_HEADER,
             text_color=Theme.TEXT_MUTED,
         )
@@ -258,6 +262,7 @@ class VideoPlayerModal(ctk.CTkToplevel):
         """Loads and begins playing a new video cleanly."""
         self.result = result
         self._duration = result.duration_seconds or 0
+        self._has_logged_playback_started = False
         self.title_label.configure(text=result.display_title)
         self.title(f"Vyntra Player - {result.display_title}")
 
@@ -265,19 +270,25 @@ class VideoPlayerModal(ctk.CTkToplevel):
         self.seek_slider.set(0.0)
         self.time_label.configure(text=f"00:00 / {format_duration(self._duration)}")
 
-        self.loading_label.configure(text="Loading the video...", text_color=Theme.TEXT_MUTED)
+        self.loading_label.configure(text="Loading video...", text_color=Theme.TEXT_MUTED)
         self.loading_label.lift()
+
+        logger.info("[Player] Starting playback for %s", result.video_id)
+        logger.info("[Player] Extracting playable stream...")
 
         # Stop previous player if any
         self._stop_current_player()
 
         def _on_ready(file_path: str, duration: int):
             if not self._is_closed:
+                logger.info("[Player] Stream extraction completed")
+                logger.info("[Player] Stream URL obtained")
                 self.after(0, lambda: self._start_playback(file_path, duration))
 
         def _on_error(err: Exception):
             if not self._is_closed:
-                logger.error("Unable to play video (%s): %s", result.video_id, err, exc_info=True)
+                sanitized_err = str(err)
+                logger.error("[Player] Stream extraction failed: %s", sanitized_err)
                 self.after(0, lambda: self.loading_label.configure(
                     text="Unable to play this video.", text_color=Theme.ERROR
                 ))
@@ -289,9 +300,14 @@ class VideoPlayerModal(ctk.CTkToplevel):
         )
 
     def _start_playback(self, media_path: str, duration: int):
-        if self._is_closed or not MediaPlayer:
+        if self._is_closed:
+            return
+        if not MediaPlayer:
+            logger.error("[Player] Media player backend unavailable")
+            self.loading_label.configure(text="Unable to play this video.", text_color=Theme.ERROR)
             return
 
+        logger.info("[Player] Initializing media player")
         self._duration = duration or self._duration
         self.seek_slider.configure(to=max(1.0, float(self._duration)))
 
@@ -309,20 +325,33 @@ class VideoPlayerModal(ctk.CTkToplevel):
             logger.info("MediaPlayer initialized for media: %s", media_path)
 
             # Start the render loop
+            self._is_render_loop_running = True
             self.after(30, self._render_loop)
 
         except Exception as e:
-            logger.error("Failed to initialize MediaPlayer for %s: %s", media_path, e, exc_info=True)
+            logger.error("[Player] Failed to initialize MediaPlayer: %s", e)
             self.loading_label.configure(text="Unable to play this video.", text_color=Theme.ERROR)
+
+    def _ensure_render_loop_running(self):
+        """Ensures the rendering loop is active if it had stopped on EOF or pause."""
+        if not self._is_render_loop_running and not self._is_closed and self._player is not None:
+            self._is_render_loop_running = True
+            self.after(10, self._render_loop)
 
     def _render_loop(self):
         """Continuously pulls decoded video frames and updates the UI."""
         if self._is_closed or self._player is None:
+            self._is_render_loop_running = False
             return
 
         frame, val = self._player.get_frame()
 
         if frame:
+            if not self._has_logged_playback_started:
+                self._has_logged_playback_started = True
+                logger.info("[Player] Playback started")
+                self.loading_label.lower()
+
             img, pts = frame
             w, h = img.get_size()
             raw_bytes = bytes(img.to_bytearray()[0])
@@ -342,21 +371,20 @@ class VideoPlayerModal(ctk.CTkToplevel):
             ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(target_w, target_h))
             self.video_label.configure(image=ctk_img)
 
-            # Hide loading overlay once frames arrive
-            self.loading_label.lower()
-
             # Update seek position
             if not self._is_seeking and pts is not None:
                 self.seek_slider.set(float(pts))
                 self.time_label.configure(text=f"{format_duration(int(pts))} / {format_duration(self._duration)}")
 
         if val == "eof":
-            logger.info("Reached end of video stream.")
+            logger.info("[Player] Reached end of video stream.")
             self.play_btn.configure(text="▶ Play")
             self._is_paused = True
+            self._is_render_loop_running = False
             return
 
         # Schedule next frame read (~60 fps polling)
+        self._is_render_loop_running = True
         self.after(16, self._render_loop)
 
     def _toggle_play_pause(self):
@@ -365,14 +393,30 @@ class VideoPlayerModal(ctk.CTkToplevel):
         self._is_paused = not self._is_paused
         self._player.set_pause(self._is_paused)
         self.play_btn.configure(text="▶ Play" if self._is_paused else "⏸ Pause")
+        if not self._is_paused:
+            self._ensure_render_loop_running()
 
     def _seek_relative(self, delta_secs: float):
         if not self._player:
             return
-        curr = self._player.get_pts() or 0.0
-        new_pos = max(0.0, min(float(self._duration), curr + delta_secs))
-        self._player.seek(new_pos, relative=False)
-        self.seek_slider.set(new_pos)
+        try:
+            curr = self._player.get_pts() or 0.0
+            new_pos = max(0.0, min(float(self._duration), curr + delta_secs))
+            logger.info("[Player] Skip %+.1fs requested (from %.2fs -> %.2fs)", delta_secs, curr, new_pos)
+            self._player.seek(new_pos, relative=False)
+            self.seek_slider.set(new_pos)
+            self.time_label.configure(text=f"{format_duration(int(new_pos))} / {format_duration(self._duration)}")
+            if self._is_paused:
+                self._is_paused = False
+                self.play_btn.configure(text="⏸ Pause")
+                self._player.set_pause(False)
+            self._ensure_render_loop_running()
+        except Exception as e:
+            import traceback
+            logger.error("[Player] Seek relative failed:\n%s", traceback.format_exc())
+            orig_title = self.result.display_title if self.result else "Vyntra Player"
+            self.title_label.configure(text=f"{orig_title} (Unable to seek)")
+            self.after(3000, lambda: self.title_label.configure(text=orig_title) if not self._is_closed else None)
 
     def _on_seek_drag(self, value):
         self._is_seeking = True
@@ -381,8 +425,21 @@ class VideoPlayerModal(ctk.CTkToplevel):
     def _on_seek_release(self, event):
         self._is_seeking = False
         if self._player:
-            val = float(self.seek_slider.get())
-            self._player.seek(val, relative=False)
+            try:
+                val = float(self.seek_slider.get())
+                logger.info("[Player] Timeline seek released at %.2fs", val)
+                self._player.seek(val, relative=False)
+                if self._is_paused:
+                    self._is_paused = False
+                    self.play_btn.configure(text="⏸ Pause")
+                    self._player.set_pause(False)
+                self._ensure_render_loop_running()
+            except Exception as e:
+                import traceback
+                logger.error("[Player] Seek release failed:\n%s", traceback.format_exc())
+                orig_title = self.result.display_title if self.result else "Vyntra Player"
+                self.title_label.configure(text=f"{orig_title} (Unable to seek to this position)")
+                self.after(3000, lambda: self.title_label.configure(text=orig_title) if not self._is_closed else None)
 
     def _on_volume_changed(self, value: float):
         if self._player:

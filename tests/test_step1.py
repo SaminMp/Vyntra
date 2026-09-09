@@ -103,6 +103,13 @@ class TestStep1(unittest.TestCase):
             cfg_mgr_2 = ConfigManager(config_dir=Path(temp_dir))
             self.assertEqual(cfg_mgr_2.config.default_format, MediaFormat.MP4.value)
 
+    def test_get_app_data_dir_cross_platform(self):
+        """Verify cross-platform application data directory resolution."""
+        from vyntra.config import get_app_data_dir
+        app_dir = get_app_data_dir()
+        self.assertIsInstance(app_dir, Path)
+        self.assertTrue(len(str(app_dir)) > 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -351,6 +351,10 @@ class VyntraApp(ctk.CTk):
         save_dir: str,
     ):
         """Dispatches download job."""
+        if save_dir and Path(save_dir).exists():
+            if str(Path(save_dir).resolve()) != str(Path(config_manager.config.download_directory).resolve()):
+                config_manager.update(download_directory=str(Path(save_dir).resolve()))
+
         audio_q_str = config_manager.config.audio_quality
         if media_format == MediaFormat.MP3 and quality:
             audio_q_str = quality
@@ -394,7 +398,7 @@ class VyntraApp(ctk.CTk):
         self.status_banner.show_success(
             message=f"✓ Downloaded: {file_name}",
             action_text="Open Folder",
-            on_action=lambda: self._open_file_location(output_path),
+            on_action=lambda: self._open_file_location(output_path, fallback_dir=task.save_directory),
         )
 
     def _download_failed(self, err: Exception):
@@ -422,25 +426,30 @@ class VyntraApp(ctk.CTk):
         Path(folder).mkdir(parents=True, exist_ok=True)
         self._open_in_file_manager(folder)
 
-    def _open_file_location(self, file_path: str):
-        path = Path(file_path)
-        if path.exists():
-            if platform.system() == "Darwin":
-                subprocess.run(["open", "-R", str(path)])
-            elif platform.system() == "Windows":
-                subprocess.run(["explorer", f"/select,{str(path)}"])
-            else:
-                self._open_in_file_manager(str(path.parent))
+    def _open_file_location(self, file_path: str, fallback_dir: Optional[str] = None):
+        target_path = Path(file_path).resolve()
+        if target_path.is_file():
+            target_dir = target_path.parent
+        elif target_path.is_dir():
+            target_dir = target_path
+        elif fallback_dir and Path(fallback_dir).exists():
+            target_dir = Path(fallback_dir).resolve()
         else:
-            self._open_downloads_folder()
+            target_dir = Path(config_manager.config.download_directory).resolve()
+
+        logger.info("[Notification] Open Folder target: %s", target_dir)
+        self._open_in_file_manager(str(target_dir))
 
     def _open_in_file_manager(self, folder_path: str):
+        folder = Path(folder_path).resolve()
+        folder.mkdir(parents=True, exist_ok=True)
+        folder_str = str(folder)
         if platform.system() == "Darwin":
-            subprocess.run(["open", folder_path])
+            subprocess.run(["open", folder_str])
         elif platform.system() == "Windows":
-            os.startfile(folder_path)
+            os.startfile(folder_str)
         else:
-            subprocess.run(["xdg-open", folder_path])
+            subprocess.run(["xdg-open", folder_str])
 
     def _open_settings(self):
         SettingsModal(self, on_saved=self._on_settings_saved)

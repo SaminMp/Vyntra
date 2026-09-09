@@ -19,6 +19,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
+from vyntra.config import config_manager
 from vyntra.models import DownloadTask, MediaFormat, SearchResult
 from vyntra.services.search_service import search_service
 from vyntra.services.youtube_service import YouTubeService, youtube_service
@@ -85,6 +86,28 @@ class TestYouTubeServiceCookiesAndPrivacy(unittest.TestCase):
             opts = self.service.get_base_ydl_options()
             self.assertNotIn("cookiefile", opts)
 
+    def test_browser_cookies_attached_when_configured(self):
+        """Verifies yt-dlp receives cookiesfrombrowser tuple when user explicitly configures browser."""
+        with patch.object(config_manager.config, "youtube_media_auth_mode", "browser"), \
+             patch.object(config_manager.config, "youtube_media_browser", "firefox"), \
+             patch.object(config_manager.config, "youtube_media_browser_profile", ""):
+            opts = self.service.get_base_ydl_options()
+            self.assertEqual(opts.get("cookiesfrombrowser"), ("firefox", None, None, None))
+            self.assertNotIn("cookiefile", opts)
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_media_access_dpapi_detection(self, mock_ydl_class):
+        """Verifies Chrome/Edge Windows App-Bound DPAPI errors are caught with helpful guidance."""
+        mock_ydl = MagicMock()
+        mock_ydl_class.return_value.__enter__.return_value = mock_ydl
+        mock_ydl.extract_info.side_effect = RuntimeError("Failed to decrypt with DPAPI. See https://github.com/yt-dlp/yt-dlp/issues/10927")
+
+        ok, msg = self.service.test_youtube_media_access("test_vid")
+        self.assertFalse(ok)
+        self.assertIn("App-Bound encryption", msg)
+        self.assertIn("Firefox", msg)
+        self.assertNotIn("Traceback", msg)
+
 
 class TestYouTubeServicePOToken(unittest.TestCase):
     """Verifies PO Token inspection and provider auditing."""
@@ -140,7 +163,7 @@ class TestYouTubeServiceFormatProbing(unittest.TestCase):
         resolutions, err = self.service.get_available_resolutions("rJgNgZRCi6s")
         self.assertEqual(resolutions, [])
         self.assertIsNotNone(err)
-        self.assertIn("cookies", err.lower())
+        self.assertIn("verification", err.lower())
 
 
 class TestYouTubeServiceErrorClassification(unittest.TestCase):
@@ -153,7 +176,7 @@ class TestYouTubeServiceErrorClassification(unittest.TestCase):
         err = Exception("Sign in to confirm you’re not a bot. Use --cookies-from-browser")
         classified = self.service.classify_error(err)
         self.assertIn("YouTube requires sign-in verification", classified)
-        self.assertIn("cookies.txt", classified)
+        self.assertIn("Media Access", classified)
 
     def test_classify_private_video(self):
         err = Exception("ERROR: [youtube] abc: Private video")

@@ -179,28 +179,28 @@ class SettingsModal(ctk.CTkToplevel):
         divider.grid(row=row, column=0, columnspan=2, padx=16, pady=10, sticky="ew")
         row += 1
 
-        # Section Header
+        # 1. Google Identity Header
         auth_header = ctk.CTkLabel(
             self.scroll_frame,
-            text="🔐 YouTube Account",
+            text="🔐 Google Account (Identity)",
             font=Theme.FONT_HEADER,
             text_color=Theme.TEXT_ACCENT,
         )
-        auth_header.grid(row=row, column=0, columnspan=2, padx=16, pady=(4, 2), sticky="w")
+        auth_header.grid(row=row, column=0, columnspan=2, padx=16, pady=(12, 2), sticky="w")
         row += 1
 
         auth_sub = ctk.CTkLabel(
             self.scroll_frame,
-            text="Connect your Google / YouTube account for seamless high-quality media access.",
+            text="Connect your Google account for YouTube Data API, playlists, and account metadata.",
             font=Theme.FONT_CAPTION,
             text_color=Theme.TEXT_MUTED,
         )
-        auth_sub.grid(row=row, column=0, columnspan=2, padx=16, pady=(0, 8), sticky="w")
+        auth_sub.grid(row=row, column=0, columnspan=2, padx=16, pady=(0, 6), sticky="w")
         row += 1
 
-        # Account Status & Action Box
+        # Google Account Status Box
         auth_box = ctk.CTkFrame(self.scroll_frame, fg_color=Theme.BG_MAIN, corner_radius=Theme.RADIUS_BUTTON)
-        auth_box.grid(row=row, column=0, columnspan=2, padx=16, pady=(4, 12), sticky="ew")
+        auth_box.grid(row=row, column=0, columnspan=2, padx=16, pady=(2, 10), sticky="ew")
         auth_box.grid_columnconfigure(0, weight=1)
 
         status_key, label, msg = auth_service.get_connection_status()
@@ -217,7 +217,7 @@ class SettingsModal(ctk.CTkToplevel):
         self.auth_status_lbl.pack(padx=14, pady=(10, 8), anchor="w")
 
         btn_row = ctk.CTkFrame(auth_box, fg_color="transparent")
-        btn_row.pack(fill="x", padx=14, pady=(0, 12))
+        btn_row.pack(fill="x", padx=14, pady=(0, 10))
 
         self.signin_btn = ctk.CTkButton(
             btn_row,
@@ -241,11 +241,135 @@ class SettingsModal(ctk.CTkToplevel):
             hover_color=Theme.ERROR_BG,
             command=self._run_signout,
         )
-        self.signout_btn.pack(side="left", padx=(0, 8))
+        self.signout_btn.pack(side="left")
+        row += 1
+
+        # 2. YouTube Media Access Header
+        media_header = ctk.CTkLabel(
+            self.scroll_frame,
+            text="🎬 YouTube Media Access (Playback & Downloads)",
+            font=Theme.FONT_HEADER,
+            text_color=Theme.TEXT_ACCENT,
+        )
+        media_header.grid(row=row, column=0, columnspan=2, padx=16, pady=(12, 2), sticky="w")
+        row += 1
+
+        media_sub = ctk.CTkLabel(
+            self.scroll_frame,
+            text="Used by the player and downloader when YouTube enforces bot-verification or account-restricted streams.",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_MUTED,
+            wraplength=480,
+            justify="left",
+        )
+        media_sub.grid(row=row, column=0, columnspan=2, padx=16, pady=(0, 6), sticky="w")
+        row += 1
+
+        # Media Access Configuration Box
+        media_box = ctk.CTkFrame(self.scroll_frame, fg_color=Theme.BG_MAIN, corner_radius=Theme.RADIUS_BUTTON)
+        media_box.grid(row=row, column=0, columnspan=2, padx=16, pady=(2, 12), sticky="ew")
+        media_box.grid_columnconfigure(1, weight=1)
+
+        # Status row
+        _, media_label, media_detail = auth_service.get_media_access_status()
+        self.media_status_lbl = ctk.CTkLabel(
+            media_box,
+            text=f"{media_label}  —  {media_detail}",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_MUTED,
+            wraplength=480,
+            justify="left",
+        )
+        self.media_status_lbl.pack(padx=14, pady=(10, 6), anchor="w")
+
+        # Browser Selection Row
+        sel_row = ctk.CTkFrame(media_box, fg_color="transparent")
+        sel_row.pack(fill="x", padx=14, pady=(2, 6))
+
+        sel_lbl = ctk.CTkLabel(
+            sel_row,
+            text="Session Provider:",
+            font=Theme.FONT_BODY,
+            text_color=Theme.TEXT_MAIN,
+        )
+        sel_lbl.pack(side="left", padx=(0, 10))
+
+        browser_options = [
+            "Guest (No Session)",
+            "Firefox Session",
+            "Chrome Session",
+            "Edge Session",
+            "Brave Session",
+            "Custom Cookie File",
+        ]
+        curr_mode = getattr(config_manager.config, "youtube_media_auth_mode", "none")
+        curr_browser = getattr(config_manager.config, "youtube_media_browser", "firefox").lower()
+
+        default_sel = "Guest (No Session)"
+        if curr_mode == "browser":
+            for opt in browser_options:
+                if curr_browser in opt.lower():
+                    default_sel = opt
+                    break
+        elif curr_mode == "cookie_file":
+            default_sel = "Custom Cookie File"
+
+        self.media_browser_option = ctk.CTkOptionMenu(
+            sel_row,
+            values=browser_options,
+            font=Theme.FONT_BODY,
+            height=30,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_MUTED,
+            button_color=Theme.PRIMARY,
+            button_hover_color=Theme.PRIMARY_HOVER,
+            command=self._on_media_provider_changed,
+        )
+        self.media_browser_option.set(default_sel)
+        self.media_browser_option.pack(side="left")
+
+        # Cookie File Path row (shown if Custom Cookie File selected)
+        self.cookie_file_frame = ctk.CTkFrame(media_box, fg_color="transparent")
+        cookie_lbl = ctk.CTkLabel(self.cookie_file_frame, text="Cookie File:", font=Theme.FONT_CAPTION, text_color=Theme.TEXT_MUTED)
+        cookie_lbl.pack(side="left", padx=(0, 8))
+        self.cookie_entry = ctk.CTkEntry(self.cookie_file_frame, font=Theme.FONT_CAPTION, height=28, width=260)
+        curr_cookie_path = getattr(config_manager.config, "youtube_media_custom_cookie_path", "")
+        self.cookie_entry.insert(0, curr_cookie_path)
+        self.cookie_entry.pack(side="left", padx=(0, 6))
+        cookie_browse_btn = ctk.CTkButton(
+            self.cookie_file_frame,
+            text="Browse...",
+            font=Theme.FONT_CAPTION,
+            height=28,
+            width=65,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_MUTED,
+            hover_color=Theme.BG_CARD_HOVER,
+            command=self._browse_cookie_file,
+        )
+        cookie_browse_btn.pack(side="left")
+
+        if default_sel == "Custom Cookie File":
+            self.cookie_file_frame.pack(fill="x", padx=14, pady=(2, 6))
+
+        # Privacy / Consent note
+        self.consent_notice_lbl = ctk.CTkLabel(
+            media_box,
+            text="🔒 Vyntra will use your existing YouTube browser session in-memory to authenticate media requests. Your Google password is never collected or stored.",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_MUTED,
+            wraplength=470,
+            justify="left",
+        )
+        self.consent_notice_lbl.pack(padx=14, pady=(2, 8), anchor="w")
+
+        # Test Media Access Button row
+        test_media_row = ctk.CTkFrame(media_box, fg_color="transparent")
+        test_media_row.pack(fill="x", padx=14, pady=(0, 10))
 
         self.test_btn = ctk.CTkButton(
-            btn_row,
-            text="🧪 Test Connection",
+            test_media_row,
+            text="🧪 Test Connection & Media Access",
             font=Theme.FONT_CAPTION,
             height=30,
             corner_radius=Theme.RADIUS_BUTTON,
@@ -257,6 +381,21 @@ class SettingsModal(ctk.CTkToplevel):
 
         row += 1
         self._next_row = row
+
+    def _on_media_provider_changed(self, choice: str):
+        if choice == "Custom Cookie File":
+            self.cookie_file_frame.pack(fill="x", padx=14, pady=(2, 6))
+        else:
+            self.cookie_file_frame.pack_forget()
+
+    def _browse_cookie_file(self):
+        chosen = filedialog.askopenfilename(
+            title="Select Cookie File",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+        if chosen:
+            self.cookie_entry.delete(0, "end")
+            self.cookie_entry.insert(0, chosen)
 
     def _build_diagnostics_section(self):
         """System diagnostics section."""
@@ -339,7 +478,23 @@ class SettingsModal(ctk.CTkToplevel):
 
     def _run_test(self):
         self.test_btn.configure(state="disabled", text="Testing...")
-        self.auth_status_lbl.configure(text="Testing Google OAuth connection...", text_color=Theme.TEXT_MUTED)
+        self.media_status_lbl.configure(text="Testing YouTube media extraction...", text_color=Theme.TEXT_MUTED)
+
+        # Apply current selection to config temporarily for test
+        browser_choice = self.media_browser_option.get()
+        if "Firefox" in browser_choice:
+            config_manager.update(youtube_media_auth_mode="browser", youtube_media_browser="firefox")
+        elif "Chrome" in browser_choice:
+            config_manager.update(youtube_media_auth_mode="browser", youtube_media_browser="chrome")
+        elif "Edge" in browser_choice:
+            config_manager.update(youtube_media_auth_mode="browser", youtube_media_browser="edge")
+        elif "Brave" in browser_choice:
+            config_manager.update(youtube_media_auth_mode="browser", youtube_media_browser="brave")
+        elif "Cookie File" in browser_choice:
+            cookie_path = self.cookie_entry.get().strip()
+            config_manager.update(youtube_media_auth_mode="cookie_file", youtube_media_custom_cookie_path=cookie_path)
+        else:
+            config_manager.update(youtube_media_auth_mode="none")
 
         def _worker():
             success, msg = auth_service.test_connection()
@@ -348,11 +503,16 @@ class SettingsModal(ctk.CTkToplevel):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_test_done(self, success: bool, msg: str):
-        self.test_btn.configure(state="normal", text="🧪 Test Connection")
+        self.test_btn.configure(state="normal", text="🧪 Test Connection & Media Access")
+        _, media_label, _ = auth_service.get_media_access_status()
+        self.media_status_lbl.configure(
+            text=f"{media_label}  —  {msg.splitlines()[-1]}",
+            text_color=Theme.SUCCESS if success else Theme.WARNING,
+        )
         status_key, label, _ = auth_service.get_connection_status()
         self.auth_status_lbl.configure(
-            text=f"{label}  —  {msg}",
-            text_color=Theme.SUCCESS if success else Theme.WARNING,
+            text=f"{label}  —  {msg.splitlines()[0]}",
+            text_color=Theme.SUCCESS if status_key == "connected" else Theme.TEXT_MUTED,
         )
 
     def _on_format_toggled(self, value: str):
@@ -379,6 +539,26 @@ class SettingsModal(ctk.CTkToplevel):
             "default_format": fmt_val,
             "max_search_results": int(self.limit_option.get()),
         }
+
+        # Media auth mode & browser selection
+        browser_choice = self.media_browser_option.get()
+        if "Firefox" in browser_choice:
+            update_kwargs["youtube_media_auth_mode"] = "browser"
+            update_kwargs["youtube_media_browser"] = "firefox"
+        elif "Chrome" in browser_choice:
+            update_kwargs["youtube_media_auth_mode"] = "browser"
+            update_kwargs["youtube_media_browser"] = "chrome"
+        elif "Edge" in browser_choice:
+            update_kwargs["youtube_media_auth_mode"] = "browser"
+            update_kwargs["youtube_media_browser"] = "edge"
+        elif "Brave" in browser_choice:
+            update_kwargs["youtube_media_auth_mode"] = "browser"
+            update_kwargs["youtube_media_browser"] = "brave"
+        elif "Cookie File" in browser_choice:
+            update_kwargs["youtube_media_auth_mode"] = "cookie_file"
+            update_kwargs["youtube_media_custom_cookie_path"] = self.cookie_entry.get().strip()
+        else:
+            update_kwargs["youtube_media_auth_mode"] = "none"
 
         if fmt_val == MediaFormat.MP3.value:
             bitrate_val = "320"

@@ -150,6 +150,7 @@ class DownloadPanel(ctk.CTkFrame):
         )
         self.folder_entry.insert(0, config_manager.config.download_directory)
         self.folder_entry.grid(row=0, column=1, padx=(0, 8), sticky="ew")
+        self.folder_entry.bind("<FocusOut>", lambda e: self._on_folder_entry_changed())
 
         self.browse_btn = ctk.CTkButton(
             self.folder_frame,
@@ -294,7 +295,7 @@ class DownloadPanel(ctk.CTkFrame):
         else:
             self._probe_error_message = error_message or "Formats unavailable"
             if "cookies" in self._probe_error_message.lower() or "verification" in self._probe_error_message.lower() or "bot" in self._probe_error_message.lower():
-                self._cached_video_resolutions = ["[ Cookies Required ]"]
+                self._cached_video_resolutions = ["[ Verification Required ]"]
             else:
                 self._cached_video_resolutions = ["[ Formats Unavailable ]"]
         self.after(0, self._refresh_video_resolutions)
@@ -364,6 +365,11 @@ class DownloadPanel(ctk.CTkFrame):
             self.folder_entry.insert(0, chosen)
             config_manager.update(download_directory=chosen)
 
+    def _on_folder_entry_changed(self):
+        val = self.folder_entry.get().strip()
+        if val and Path(val).exists():
+            config_manager.update(download_directory=val)
+
     def get_save_directory(self) -> str:
         val = self.folder_entry.get().strip()
         if not val:
@@ -408,13 +414,16 @@ class DownloadPanel(ctk.CTkFrame):
     def _handle_download(self):
         if self._is_downloading or not self.selected_result:
             return
+        chosen_dir = self.get_save_directory()
+        if chosen_dir:
+            config_manager.update(download_directory=chosen_dir)
         self.set_downloading(True)
         if self.on_download:
             self.on_download(
                 self.selected_result,
                 self.get_selected_format(),
                 self.get_selected_quality(),
-                self.get_save_directory(),
+                chosen_dir,
             )
 
     def _handle_cancel(self):

@@ -84,7 +84,8 @@ class TestYouTubeAuthManager(unittest.TestCase):
         import os
 
         # 1. Test bundled default (when no env var)
-        with patch.dict(os.environ, {}, clear=True):
+        non_vyntra_env = {k: v for k, v in os.environ.items() if not k.startswith("VYNTRA_")}
+        with patch.dict(os.environ, non_vyntra_env, clear=True):
             cid, sec, pid, source = load_developer_oauth_client()
             self.assertTrue(len(cid) > 10)
             self.assertIn(".apps.googleusercontent.com", cid)
