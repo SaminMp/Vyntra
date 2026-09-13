@@ -803,5 +803,12 @@ class VyntraApp(ctk.CTk):
 
     def _on_app_close(self):
         """Clean shutdown of all platform pages, background tasks, and application."""
-        self.destroy()
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        try:
+            self.quit()
+        except Exception:
+            pass
 

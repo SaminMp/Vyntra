@@ -289,11 +289,24 @@ exit 1
             raise RuntimeError(f"Could not spawn update process: {e}") from e
 
         logger.info("[Updater] Updater spawned successfully. Terminating Vyntra instance for replacement.")
-        import logging
-        logging.shutdown()
+        # Gracefully withdraw and quit Tkinter if running to prevent secondary-thread DLL aborts
+        try:
+            import tkinter
+            root = getattr(tkinter, "_default_root", None)
+            if root:
+                root.withdraw()
+                root.quit()
+        except Exception:
+            pass
+
+        try:
+            import logging
+            logging.shutdown()
+        except Exception:
+            pass
+
         import time
-        time.sleep(0.5)
+        time.sleep(0.3)
 
         # os._exit terminates the entire process immediately, releasing locks on the executable
-        # even when called from a secondary worker thread
         os._exit(0)
