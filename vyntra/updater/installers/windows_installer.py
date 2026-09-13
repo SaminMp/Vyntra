@@ -5,9 +5,13 @@ provides automatic rollback upon failure, and launches the updated version.
 """
 
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
+
+import zipfile
+import tempfile
+import shutil
 
 from vyntra.updater.constants import get_updates_dir
 from vyntra.updater.installers.base import BaseInstaller
@@ -29,6 +33,28 @@ class WindowsInstaller(BaseInstaller):
         """
         if not staged_file.exists():
             raise FileNotFoundError(f"Staged update file not found: {staged_file}")
+
+        if staged_file.suffix.lower() == ".zip":
+            logger.info("[Updater] Staged file is a zip archive, extracting...")
+            extract_dir = Path(tempfile.mkdtemp(prefix="vyntra_update_"))
+            with zipfile.ZipFile(staged_file, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+
+            exe_files = list(extract_dir.rglob("*.exe"))
+            if not exe_files:
+                raise FileNotFoundError(f"No executable found in zip archive: {staged_file}")
+
+            staged_file = exe_files[0]
+            for exe in exe_files:
+                if exe.name.lower() == target_path.name.lower():
+                    staged_file = exe
+                    break
+            logger.info("[Updater] Resolved executable from zip: %s", staged_file)
+            # Cleanup the extracted directory after we have the exe path
+            try:
+                shutil.rmtree(extract_dir)
+            except Exception as e:
+                logger.debug("[Updater] Failed to remove temporary extract dir %s: %s", extract_dir, e)
 
         pid = os.getpid()
         updates_dir = get_updates_dir()

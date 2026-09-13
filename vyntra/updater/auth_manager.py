@@ -7,7 +7,10 @@ repository release checks and asset downloads without embedding master secrets.
 
 import os
 from typing import Dict, Optional, Tuple
-import keyring
+try:
+    import keyring
+except ImportError:
+    keyring = None  # type: ignore
 import requests
 
 from vyntra.updater.constants import (
@@ -52,10 +55,12 @@ class UpdaterAuthManager:
 
         # 3. Retrieve from secure OS Keyring
         try:
-            token = keyring.get_password(KEYRING_SERVICE_NAME, KEYRING_USERNAME)
-            if token:
-                self._cached_token = token.strip()
-                return self._cached_token
+            if keyring:
+                token = keyring.get_password(KEYRING_SERVICE_NAME, KEYRING_USERNAME)
+                if token:
+                    self._cached_token = token.strip()
+                    return self._cached_token
+            # If keyring not available or token not found, continue
         except Exception as e:
             logger.debug("[UpdaterAuth] Could not read token from keyring: %s", e)
 
