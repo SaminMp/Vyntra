@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 import customtkinter as ctk
 
+from vyntra.config import config_manager
 from vyntra.ui.app import VyntraApp
 from vyntra.ui.views.settings_modal import SettingsModal
 from vyntra.ui.views.update_modal import UpdateModal
@@ -44,6 +45,7 @@ class TestUpdaterUI(unittest.TestCase):
             )
 
             modal = UpdateModal(root, check_result=check_res)
+            modal.withdraw()
             root.update_idletasks()
 
             # Verify notes content
@@ -74,7 +76,8 @@ class TestUpdaterUI(unittest.TestCase):
         root.withdraw()
         try:
             settings = SettingsModal(root)
-            root.update()
+            settings.withdraw()
+            root.update_idletasks()
 
             # Clean update section verified
             self.assertTrue(hasattr(settings, "check_updates_btn"))
@@ -95,44 +98,46 @@ class TestUpdaterUI(unittest.TestCase):
 
     def test_app_shows_update_badge_when_available(self):
         """Verifies VyntraApp maps update_badge_btn when an update is available."""
-        app = VyntraApp()
-        try:
-            app.update()
-            # Initially hidden
-            self.assertEqual(app.update_badge_btn.winfo_manager(), "")
+        with patch.object(config_manager.config, "setup_completed", True):
+            app = VyntraApp()
+            app.withdraw()
+            try:
+                app.update_idletasks()
+                # Initially hidden
+                self.assertEqual(app.update_badge_btn.winfo_manager(), "")
 
-            asset = ReleaseAsset(
-                name="Vyntra-Windows-x64.exe",
-                download_url="http://mock.test/Vyntra.exe",
-                size=50 * 1024 * 1024,
-            )
-            rel_info = ReleaseInfo(
-                version="1.2.5",
-                tag="v1.2.5",
-                name="Vyntra v1.2.5",
-                release_notes="Notes",
-                published_at="2026-09-14",
-                assets=[asset],
-            )
-            res = UpdateCheckResult(
-                status="available",
-                current_version="1.1.3",
-                latest_release=rel_info,
-                target_asset=asset,
-            )
+                asset = ReleaseAsset(
+                    name="Vyntra-Windows-x64.exe",
+                    download_url="http://mock.test/Vyntra.exe",
+                    size=50 * 1024 * 1024,
+                )
+                rel_info = ReleaseInfo(
+                    version="1.2.5",
+                    tag="v1.2.5",
+                    name="Vyntra v1.2.5",
+                    release_notes="Notes",
+                    published_at="2026-09-14",
+                    assets=[asset],
+                )
+                res = UpdateCheckResult(
+                    status="available",
+                    current_version="1.1.3",
+                    latest_release=rel_info,
+                    target_asset=asset,
+                )
 
-            app._handle_update_result(res)
-            app.update()
+                app._handle_update_result(res)
+                app.update_idletasks()
 
-            # Now mapped and showing version
-            self.assertEqual(app.update_badge_btn.winfo_manager(), "pack")
-            self.assertIn("v1.2.5", app.update_badge_btn.cget("text"))
+                # Now mapped and showing version
+                self.assertEqual(app.update_badge_btn.winfo_manager(), "pack")
+                self.assertIn("v1.2.5", app.update_badge_btn.cget("text"))
 
-            # Verify terminal received notice
-            terminal_text = app.footer_terminal.textbox.get("1.0", "end")
-            self.assertIn("New version v1.2.5 available", terminal_text)
-        finally:
-            app.destroy()
+                # Verify terminal received notice
+                terminal_text = app.footer_terminal.textbox.get("1.0", "end")
+                self.assertIn("New version v1.2.5 available", terminal_text)
+            finally:
+                app.destroy()
 
 
 if __name__ == "__main__":

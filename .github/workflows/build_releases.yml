@@ -40,6 +40,7 @@ jobs:
           choco install ffmpeg --no-progress
 
       - name: Run Test Suite
+        timeout-minutes: 5
         run: |
           pytest -v
 
@@ -104,6 +105,7 @@ jobs:
           pip install pyinstaller pytest
 
       - name: Run Test Suite
+        timeout-minutes: 5
         run: |
           pytest -v
 

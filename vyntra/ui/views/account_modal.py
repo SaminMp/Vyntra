@@ -21,8 +21,12 @@ class AccountModal(ctk.CTkToplevel):
         self.resizable(False, False)
         self.configure(fg_color=Theme.BG_MAIN)
 
-        self.transient(master)
-        self.grab_set()
+        try:
+            self.transient(master)
+            if master and master.winfo_ismapped():
+                self.grab_set()
+        except Exception:
+            pass
 
         self._auth_listener = self._on_external_auth_changed
         auth_service.add_auth_listener(self._auth_listener)

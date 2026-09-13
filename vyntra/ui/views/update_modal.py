@@ -29,8 +29,12 @@ class UpdateModal(ctk.CTkToplevel):
         self.minsize(500, 440)
         self.configure(fg_color=Theme.BG_MAIN)
 
-        self.transient(master)
-        self.grab_set()
+        try:
+            self.transient(master)
+            if master and master.winfo_ismapped():
+                self.grab_set()
+        except Exception:
+            pass
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)

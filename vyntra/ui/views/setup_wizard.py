@@ -25,8 +25,12 @@ class SetupWizard(ctk.CTkToplevel):
         self.resizable(False, False)
         self.configure(fg_color=Theme.BG_MAIN)
 
-        self.transient(master)
-        self.grab_set()
+        try:
+            self.transient(master)
+            if master and master.winfo_ismapped():
+                self.grab_set()
+        except Exception:
+            pass
 
         self._current_step = 1
 
