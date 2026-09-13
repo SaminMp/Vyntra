@@ -44,12 +44,20 @@ class WindowsInstaller(BaseInstaller):
             if not exe_files:
                 raise FileNotFoundError(f"No executable found in zip archive: {staged_file}")
 
-            staged_file = exe_files[0]
+            extracted_exe = exe_files[0]
             for exe in exe_files:
                 if exe.name.lower() == target_path.name.lower():
-                    staged_file = exe
+                    extracted_exe = exe
                     break
-            logger.info("[Updater] Resolved executable from zip: %s", staged_file)
+            logger.info("[Updater] Resolved executable from zip: %s", extracted_exe)
+
+            updates_dir = get_updates_dir()
+            updates_dir.mkdir(parents=True, exist_ok=True)
+            safe_staged_file = updates_dir / extracted_exe.name
+            shutil.copy2(extracted_exe, safe_staged_file)
+            staged_file = safe_staged_file
+            logger.info("[Updater] Copied extracted executable to safe location: %s", staged_file)
+
             # Cleanup the extracted directory after we have the exe path
             try:
                 shutil.rmtree(extract_dir)
@@ -97,12 +105,13 @@ if not errorlevel 1 (
 )
 
 echo [%DATE% %TIME%] [Vyntra Updater] Process !PID! terminated. Waiting for handle release... >> "!LOG!"
-timeout /t 1 /nobreak >NUL
+timeout /t 2 /nobreak >NUL
 
 echo [Vyntra Updater] Updating executable in-place...
 set /a ATTEMPTS=0
 :replace_loop
 set /a ATTEMPTS+=1
+echo [%DATE% %TIME%] [Vyntra Updater] Attempt !ATTEMPTS! of 15... >> "!LOG!"
 
 rem Ensure any previous backup is removed
 if exist "!BACKUP!" del /f /q "!BACKUP!" >NUL 2>&1
@@ -130,7 +139,7 @@ if exist "!TARGET!" (
 )
 
 :replace_retry
-if !ATTEMPTS! leq 10 (
+if !ATTEMPTS! leq 15 (
     timeout /t 1 /nobreak >NUL
     goto replace_loop
 )
@@ -151,7 +160,7 @@ echo [%DATE% %TIME%] [Vyntra Updater] Launched updated Vyntra. Exiting updater. 
 exit 0
 
 :rollback
-echo [%DATE% %TIME%] [Vyntra Updater ERROR] Replacement failed after 10 attempts. Rolling back... >> "!LOG!"
+echo [%DATE% %TIME%] [Vyntra Updater ERROR] Replacement failed after 15 attempts. Rolling back... >> "!LOG!"
 if exist "!BACKUP!" (
     copy /y "!BACKUP!" "!TARGET!" >NUL 2>&1
     del /f /q "!BACKUP!" >NUL 2>&1
