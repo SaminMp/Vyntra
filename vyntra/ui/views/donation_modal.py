@@ -162,7 +162,7 @@ class DonationModal(ctk.CTkToplevel):
         bottom_frame.grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 18))
         bottom_frame.grid_columnconfigure(0, weight=1)
 
-        self._dont_show_var = ctk.BooleanVar(value=config_manager.config.donation_prompt_dismissed)
+        self._dont_show_var = ctk.BooleanVar(master=self, value=config_manager.config.donation_prompt_dismissed)
         self.dont_show_checkbox = ctk.CTkCheckBox(
             bottom_frame,
             text="Don't show this again automatically",
@@ -242,6 +242,12 @@ class DonationModal(ctk.CTkToplevel):
                     self.tk.eval(f"after cancel {aid}")
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "_dont_show_var"):
+                del self._dont_show_var
         except Exception:
             pass
 

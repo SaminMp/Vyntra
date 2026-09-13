@@ -27,7 +27,7 @@ from vyntra.updater.platform_detector import (
     is_frozen,
 )
 from vyntra.updater.providers.base import BaseUpdateProvider
-from vyntra.updater.providers.service_provider import VyntraUpdateServiceProvider
+from vyntra.updater.providers.github_provider import GitHubReleaseProvider
 from vyntra.utils.logger import logger
 
 
@@ -60,7 +60,7 @@ class UpdateManager:
         self._update_lock = threading.Lock()
         self._listeners: List[Callable[[UpdateCheckResult], None]] = []
 
-        self.provider = provider or VyntraUpdateServiceProvider()
+        self.provider = provider or GitHubReleaseProvider()
         self._downloader = getattr(self.provider, "downloader", None) or UpdateDownloadManager()
 
         self._last_result: Optional[UpdateCheckResult] = None

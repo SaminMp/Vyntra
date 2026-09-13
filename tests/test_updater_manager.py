@@ -32,6 +32,11 @@ class TestUpdaterManager(unittest.TestCase):
         self.assertEqual(self.manager.state, UpdateState.IDLE)
         self.assertIsNone(self.manager.last_result)
 
+    def test_default_provider_is_github_release_provider(self):
+        from vyntra.updater.providers.github_provider import GitHubReleaseProvider
+        default_mgr = UpdateManager()
+        self.assertIsInstance(default_mgr.provider, GitHubReleaseProvider)
+
     def test_check_for_updates_available_transitions_state(self):
         """When provider reports available update, manager state is AVAILABLE."""
         asset = ReleaseAsset(

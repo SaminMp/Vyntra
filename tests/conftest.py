@@ -81,13 +81,43 @@ def pytest_sessionstart(session):
                         pass
                 return safe_destroy
             cls.destroy = make_safe_destroy(orig_destroy)
+
+        # Guard Tkinter Variable and Image __del__ against execution on background worker threads.
+        # Calling into Tcl from secondary threads during Python GC panics with:
+        # "Tcl_AsyncDelete: async handler deleted by the wrong thread" (code 0x80000003).
+        import threading
+        import tkinter
+
+        orig_var_del = getattr(tkinter.Variable, "__del__", None)
+        if orig_var_del:
+            def safe_var_del(self):
+                if threading.current_thread() is not threading.main_thread():
+                    return
+                try:
+                    orig_var_del(self)
+                except Exception:
+                    pass
+            tkinter.Variable.__del__ = safe_var_del
+
+        orig_img_del = getattr(tkinter.Image, "__del__", None)
+        if orig_img_del:
+            def safe_img_del(self):
+                if threading.current_thread() is not threading.main_thread():
+                    return
+                try:
+                    orig_img_del(self)
+                except Exception:
+                    pass
+            tkinter.Image.__del__ = safe_img_del
     except Exception:
         pass
 
 
 @pytest.fixture(autouse=True)
 def clean_test_lifecycle():
-    """Autouse fixture providing per-test lifecycle isolation and Tkinter timer purging."""
+    """Autouse fixture providing per-test lifecycle isolation, Tk timer purging, and main-thread GC."""
+    import gc
+    gc.collect()
     yield
 
     # Clean up CustomTkinter background trackers
@@ -122,6 +152,14 @@ def clean_test_lifecycle():
                     root.update_idletasks()
                 except Exception:
                     pass
+    except Exception:
+        pass
+
+    # Collect all orphaned Tkinter objects immediately ON THE MAIN THREAD
+    # so they are never garbage-collected on background worker threads.
+    try:
+        import gc
+        gc.collect()
     except Exception:
         pass
 

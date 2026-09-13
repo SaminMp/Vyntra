@@ -83,8 +83,9 @@ class UpdateDownloadManager:
             except Exception as e:
                 logger.warning("[Updater] Could not remove stale staging file: %s", e)
 
+        from vyntra import __version__
         headers = {
-            "User-Agent": USER_AGENT_TEMPLATE.format(version="1.1.3"),
+            "User-Agent": USER_AGENT_TEMPLATE.format(version=__version__),
             "Accept": "application/octet-stream",
         }
         if auth_token:
@@ -99,8 +100,12 @@ class UpdateDownloadManager:
         bytes_since_last = 0
         current_speed = 0.0
 
-        # Prefer asset API URL for private repositories; fallback to download_url
-        initial_url = asset.api_url or asset.download_url
+        # Prefer asset API URL when auth_token is provided (private repo);
+        # otherwise use direct download_url for public downloads.
+        if auth_token and asset.api_url:
+            initial_url = asset.api_url
+        else:
+            initial_url = asset.download_url or asset.api_url
 
         try:
             logger.info("[Updater] Starting download of asset: %s (%s)", asset.name, initial_url)
