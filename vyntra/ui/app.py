@@ -3,13 +3,15 @@ Main Application Window and Layout Orchestrator for Vyntra.
 Supports multi-platform media browsing and downloading across YouTube, Instagram, TikTok, and Spotify.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 import logging
 import os
 import platform
 import subprocess
 import sys
-from typing import Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import customtkinter as ctk
 
 from vyntra import __app_name__, __version__
