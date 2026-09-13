@@ -78,16 +78,32 @@ set /a ATTEMPTS=0
 :replace_loop
 set /a ATTEMPTS+=1
 
+rem Ensure any previous backup is removed
 if exist "!BACKUP!" del /f /q "!BACKUP!" >NUL 2>&1
-copy /y "!TARGET!" "!BACKUP!" >NUL 2>&1
 
-copy /y "!NEW_EXE!" "!TARGET!" >NUL 2>&1
-if not errorlevel 1 goto replace_success
+rem Rename current target to backup
+move /y "!TARGET!" "!BACKUP!" >NUL 2>&1
+if errorlevel 1 (
+    echo [%DATE% %TIME%] [Vyntra Updater] Failed to backup target !TARGET!. Retrying... >>"!LOG!"
+    goto replace_retry
+)
 
+rem Move new executable into place
 move /y "!NEW_EXE!" "!TARGET!" >NUL 2>&1
-if not errorlevel 1 goto replace_success
+if errorlevel 1 (
+    echo [%DATE% %TIME%] [Vyntra Updater] Move new exe failed. Retrying... >>"!LOG!"
+    goto replace_retry
+)
 
-echo [%DATE% %TIME%] [Vyntra Updater] Replace attempt !ATTEMPTS! failed. Retrying... >> "!LOG!"
+rem Verify replacement succeeded by checking file existence
+if exist "!TARGET!" (
+    goto replace_success
+) else (
+    echo [%DATE% %TIME%] [Vyntra Updater] Target not found after move. Retrying... >>"!LOG!"
+    goto replace_retry
+)
+
+:replace_retry
 if !ATTEMPTS! leq 10 (
     timeout /t 1 /nobreak >NUL
     goto replace_loop
