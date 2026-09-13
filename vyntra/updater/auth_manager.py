@@ -35,13 +35,16 @@ class UpdaterAuthManager:
         """
         Retrieves the configured update token.
         Priority:
-        1. Environment variable VYNTRA_UPDATE_TOKEN (CI / headless testing)
-        2. OS-backed Keyring (Windows Credential Manager / macOS Keychain)
+        1. Environment variables (VYNTRA_UPDATE_TOKEN, GITHUB_TOKEN, GH_TOKEN)
+        2. In-memory cached token
+        3. Secure OS Keyring (Windows Credential Manager / macOS Keychain)
+        4. Host Git Credential Manager (git credential fill for host=github.com)
         """
-        # 1. Check environment variable override
-        env_token = os.environ.get(ENV_TOKEN_VAR, "").strip()
-        if env_token:
-            return env_token
+        # 1. Check environment variable overrides
+        for env_var in (ENV_TOKEN_VAR, "GITHUB_TOKEN", "GH_TOKEN"):
+            env_token = os.environ.get(env_var, "").strip()
+            if env_token:
+                return env_token
 
         # 2. Check cached in-memory token
         if self._cached_token:
@@ -56,6 +59,39 @@ class UpdaterAuthManager:
         except Exception as e:
             logger.debug("[UpdaterAuth] Could not read token from keyring: %s", e)
 
+        # 4. Host Git Credential Manager (active outside pytest unit tests)
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            git_token = self._get_token_from_git_credentials()
+            if git_token:
+                self._cached_token = git_token
+                try:
+                    keyring.set_password(KEYRING_SERVICE_NAME, KEYRING_USERNAME, git_token)
+                except Exception:
+                    pass
+                return git_token
+
+        return None
+
+    def _get_token_from_git_credentials(self) -> Optional[str]:
+        """Queries host git credential helper for github.com token."""
+        try:
+            import subprocess
+            proc = subprocess.run(
+                ["git", "credential", "fill"],
+                input="protocol=https\nhost=github.com\n",
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                for line in proc.stdout.splitlines():
+                    if line.startswith("password="):
+                        val = line.split("=", 1)[1].strip()
+                        if val and (val.startswith("ghp_") or val.startswith("gho_") or val.startswith("github_pat_") or len(val) >= 20):
+                            return val
+        except Exception as e:
+            logger.debug("[UpdaterAuth] Git credential lookup error: %s", e)
         return None
 
     def set_token(self, token: str) -> bool:

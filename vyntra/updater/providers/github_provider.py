@@ -114,6 +114,28 @@ class GitHubReleaseProvider(BaseUpdateProvider):
                     )
 
             elif resp.status_code == 404:
+                if not token:
+                    try:
+                        repo_check = requests.get(
+                            f"https://api.github.com/repos/{self.owner}/{self.repo}",
+                            headers={"User-Agent": headers["User-Agent"], "Accept": "application/vnd.github.v3+json"},
+                            timeout=(NETWORK_CONNECT_TIMEOUT, NETWORK_READ_TIMEOUT),
+                        )
+                        if repo_check.status_code == 404:
+                            err_msg = (
+                                f"Repository '{self.owner}/{self.repo}' is private. "
+                                "Enter a GitHub access token in Settings to check for updates."
+                            )
+                            logger.info("[Updater] %s", err_msg)
+                            return UpdateCheckResult(
+                                status="auth_required",
+                                current_version=current_version,
+                                auth_status="unauthenticated",
+                                error_message=err_msg,
+                            )
+                    except Exception as e:
+                        logger.debug("[Updater] Repo visibility check error: %s", e)
+
                 logger.info("[Updater] No published releases found on repository %s/%s.", self.owner, self.repo)
                 return UpdateCheckResult(
                     status="up_to_date",

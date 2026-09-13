@@ -273,7 +273,7 @@ class SettingsModal(ctk.CTkToplevel):
 
         sec_label = ctk.CTkLabel(
             self.scroll_frame,
-            text="🚀 Application Updates",
+            text="Application Updates",
             font=Theme.FONT_HEADER,
             text_color=Theme.TEXT_ACCENT,
         )
@@ -297,11 +297,13 @@ class SettingsModal(ctk.CTkToplevel):
             text="Vyntra checks for new releases automatically in the background.",
             font=Theme.FONT_CAPTION,
             text_color=Theme.TEXT_MUTED,
+            wraplength=480,
+            justify="left",
         )
         self.updater_status_lbl.grid(row=1, column=0, padx=12, pady=(0, 10), sticky="w")
 
         btn_bar = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
-        btn_bar.grid(row=row + 1, column=0, columnspan=2, padx=16, pady=(0, 12), sticky="ew")
+        btn_bar.grid(row=row + 1, column=0, columnspan=2, padx=16, pady=(0, 8), sticky="ew")
 
         self.check_updates_btn = ctk.CTkButton(
             btn_bar,
@@ -330,13 +332,74 @@ class SettingsModal(ctk.CTkToplevel):
         self.install_update_btn.pack(side="left", padx=10)
         self.install_update_btn.pack_forget()
 
+        # GitHub Access Token Input for Private Repository Access
+        from vyntra.updater.auth_manager import updater_auth_manager
+        current_token = updater_auth_manager.get_token() or ""
+
+        token_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        token_frame.grid(row=row + 2, column=0, columnspan=2, padx=16, pady=(0, 12), sticky="ew")
+        token_frame.grid_columnconfigure(0, weight=1)
+
+        token_hdr = ctk.CTkLabel(
+            token_frame,
+            text="GitHub Access Token (Required for Private Releases):",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_MUTED,
+        )
+        token_hdr.grid(row=0, column=0, sticky="w", pady=(0, 4))
+
+        token_row = ctk.CTkFrame(token_frame, fg_color="transparent")
+        token_row.grid(row=1, column=0, sticky="ew")
+        token_row.grid_columnconfigure(0, weight=1)
+
+        self.github_token_entry = ctk.CTkEntry(
+            token_row,
+            placeholder_text="Enter GitHub Personal Access Token (ghp_...)",
+            show="*",
+            height=30,
+            font=Theme.FONT_CAPTION,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_INPUT,
+            border_color=Theme.BORDER_SUBTLE,
+        )
+        self.github_token_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        if current_token:
+            self.github_token_entry.insert(0, current_token)
+
+        self.save_token_btn = ctk.CTkButton(
+            token_row,
+            text="Save Token" if not current_token else "Update Token",
+            font=Theme.FONT_CAPTION,
+            height=30,
+            width=110,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_CARD_HOVER,
+            hover_color=Theme.PRIMARY,
+            command=self._on_save_token_clicked,
+        )
+        self.save_token_btn.grid(row=0, column=1)
+
+        if current_token:
+            self.clear_token_btn = ctk.CTkButton(
+                token_row,
+                text="Remove",
+                font=Theme.FONT_CAPTION,
+                height=30,
+                width=75,
+                corner_radius=Theme.RADIUS_BUTTON,
+                fg_color=Theme.BG_MUTED,
+                hover_color=Theme.ERROR,
+                command=self._on_clear_token_clicked,
+            )
+            self.clear_token_btn.grid(row=0, column=2, padx=(6, 0))
+
         # If an update is already discovered, show the install button immediately
         if update_manager.last_result and update_manager.last_result.has_update:
             self.install_update_btn.pack(side="left", padx=10)
             v = update_manager.last_result.latest_release.version if update_manager.last_result.latest_release else ""
             self.updater_status_lbl.configure(text=f"New version v{v} is available!", text_color=Theme.SUCCESS)
 
-        self._next_row = row + 2
+        self._next_row = row + 3
 
     # -------------------------------------------------------------------------
     # 4. Donation & Support
@@ -525,10 +588,22 @@ class SettingsModal(ctk.CTkToplevel):
                         text_color=Theme.TEXT_PRIMARY,
                     )
                     self.install_update_btn.pack_forget()
+                elif result.status == "auth_required":
+                    self.updater_status_lbl.configure(
+                        text=result.error_message or "GitHub access token required to check private repository releases.",
+                        text_color=Theme.WARNING,
+                    )
+                    self.install_update_btn.pack_forget()
                 elif result.status == "no_asset":
                     self.updater_status_lbl.configure(
                         text=result.error_message or "New release found, but no compatible package for this OS.",
                         text_color=Theme.WARNING,
+                    )
+                    self.install_update_btn.pack_forget()
+                elif result.status == "error":
+                    self.updater_status_lbl.configure(
+                        text=f"Update check error: {result.error_message}",
+                        text_color=Theme.ERROR,
                     )
                     self.install_update_btn.pack_forget()
                 else:
@@ -541,6 +616,39 @@ class SettingsModal(ctk.CTkToplevel):
                 self.after(0, lambda: update() if self.winfo_exists() else None)
 
         update_manager.check_for_updates(callback=_on_done, background=False)
+
+    def _on_save_token_clicked(self):
+        from vyntra.updater.auth_manager import updater_auth_manager
+        token = self.github_token_entry.get().strip()
+        if not token:
+            return
+        updater_auth_manager.set_token(token)
+        self.updater_status_lbl.configure(text="GitHub access token saved to secure OS Keyring.", text_color=Theme.SUCCESS)
+        self.save_token_btn.configure(text="Update Token")
+        if not hasattr(self, "clear_token_btn") or not self.clear_token_btn.winfo_exists():
+            self.clear_token_btn = ctk.CTkButton(
+                self.save_token_btn.master,
+                text="Remove",
+                font=Theme.FONT_CAPTION,
+                height=30,
+                width=75,
+                corner_radius=Theme.RADIUS_BUTTON,
+                fg_color=Theme.BG_MUTED,
+                hover_color=Theme.ERROR,
+                command=self._on_clear_token_clicked,
+            )
+            self.clear_token_btn.grid(row=0, column=2, padx=(6, 0))
+        self._on_check_updates_clicked()
+
+    def _on_clear_token_clicked(self):
+        from vyntra.updater.auth_manager import updater_auth_manager
+        updater_auth_manager.delete_token()
+        self.github_token_entry.delete(0, "end")
+        self.save_token_btn.configure(text="Save Token")
+        if hasattr(self, "clear_token_btn") and self.clear_token_btn.winfo_exists():
+            self.clear_token_btn.destroy()
+            delattr(self, "clear_token_btn")
+        self.updater_status_lbl.configure(text="GitHub access token removed.", text_color=Theme.TEXT_MUTED)
 
     def _on_open_update_modal_clicked(self):
         if update_manager.last_result and update_manager.last_result.has_update:
