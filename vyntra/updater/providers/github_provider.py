@@ -290,9 +290,10 @@ class GitHubReleaseProvider(BaseUpdateProvider):
         if not target_url:
             return mapping
 
+        from vyntra import __version__
         headers = {
             "Accept": "application/octet-stream",
-            "User-Agent": USER_AGENT_TEMPLATE.format(version="1.1.4"),
+            "User-Agent": USER_AGENT_TEMPLATE.format(version=__version__),
         }
         try:
             resp = requests.get(
@@ -314,11 +315,12 @@ class GitHubReleaseProvider(BaseUpdateProvider):
 
     def _fetch_private_checksums(self, asset_api_url: str, token: str) -> Dict[str, str]:
         """Authenticated download of SHA256SUMS.txt from private GitHub release."""
+        from vyntra import __version__
         mapping = {}
         headers = {
             "Authorization": f"Bearer {token.strip()}",
             "Accept": "application/octet-stream",
-            "User-Agent": USER_AGENT_TEMPLATE.format(version="1.1.4"),
+            "User-Agent": USER_AGENT_TEMPLATE.format(version=__version__),
         }
         try:
             # Probe redirect

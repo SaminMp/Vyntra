@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -38,6 +40,10 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller pytest
           choco install ffmpeg --no-progress
+
+      - name: Synchronize Application Release Version
+        run: |
+          python scripts/get_release_version.py
 
       - name: Run Test Suite
         timeout-minutes: 5
@@ -91,6 +97,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -103,6 +111,10 @@ jobs:
           python3 -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller pytest
+
+      - name: Synchronize Application Release Version
+        run: |
+          python3 scripts/get_release_version.py
 
       - name: Run Test Suite
         timeout-minutes: 5

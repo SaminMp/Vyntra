@@ -260,7 +260,7 @@ class TestStreamPlaybackAndVersioning(unittest.TestCase):
         import vyntra
         self.assertTrue(hasattr(vyntra, "__version__"))
         version = vyntra.__version__
-        self.assertEqual(version, "1.1.4")
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
         parts = version.split(".")
         self.assertEqual(len(parts), 3, "Version must follow MAJOR.MINOR.PATCH format")
         for part in parts:
