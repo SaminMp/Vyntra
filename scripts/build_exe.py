@@ -50,13 +50,22 @@ def main():
     if exe_path.exists():
         size_mb = exe_path.stat().st_size / (1024 * 1024)
         print("\n" + "=" * 60)
-        print("  BUILD SUCCESSFUL!")
+        print("  WINDOWS BUILD SUCCESSFUL!")
         print(f"  Executable: {exe_path}")
         print(f"  Size: {size_mb:.2f} MB")
         print("=" * 60)
     else:
         print(f"\n[Build ERROR] Expected executable not found at: {exe_path}")
         sys.exit(1)
+
+    # 5. Automatically assemble macOS Application Bundle in dist/
+    print("\n[Build] Packaging macOS deliverables for dist/...")
+    try:
+        sys.path.insert(0, str(root_dir))
+        from scripts.package_mac_app import package_mac_app
+        package_mac_app()
+    except Exception as e:
+        print(f"[Build Warning] Could not package macOS deliverables: {e}")
 
 if __name__ == "__main__":
     main()

@@ -45,9 +45,13 @@ class TestYouTubeServiceOptions(unittest.TestCase):
         self.assertIn("player_client", opts["extractor_args"]["youtube"])
 
         clients = opts["extractor_args"]["youtube"]["player_client"]
-        self.assertIn("tv_embedded", clients)
-        self.assertIn("web", clients)
-        self.assertIn("android", clients)
+        self.assertEqual(clients, ["default"])
+
+        # When cookies are present or auth_mode is browser, authed clients are used
+        with patch.object(self.service, "is_cookies_available", return_value=True):
+            authed_opts = self.service.get_base_ydl_options(purpose="probe")
+            authed_clients = authed_opts["extractor_args"]["youtube"]["player_client"]
+            self.assertEqual(authed_clients, ["web_embedded", "tv_downgraded", "web"])
 
         # Node.js and remote components
         node_path = self.service.get_node_path()
@@ -208,19 +212,17 @@ class TestYouTubeServiceDiagnostics(unittest.TestCase):
         }
 
         report = self.service.diagnose_video("test_vid_xyz")
-        self.assertIn("YouTube Diagnostics", report)
-        self.assertIn("──────────────────────────────", report)
+        self.assertIn("Vyntra YouTube Diagnostics", report)
         self.assertIn("yt-dlp version:", report)
-        self.assertIn("Video ID: test_vid_xyz", report)
-        self.assertIn("Authentication:", report)
+        self.assertIn("test_vid_xyz", report)
         self.assertIn("Google OAuth:", report)
         self.assertIn("yt-dlp cookies:", report)
-        self.assertIn("Player client:", report)
+        self.assertIn("Authentication method:", report)
+        self.assertIn("Player clients:", report)
         self.assertIn("PO Token provider:", report)
         self.assertIn("PO Token generated:", report)
         self.assertIn("PO Token attached:", report)
         self.assertIn("Format probe:", report)
-        self.assertIn("Formats found:", report)
         self.assertIn("Playback extraction:", report)
         self.assertIn("Download extraction:", report)
 

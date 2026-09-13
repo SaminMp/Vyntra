@@ -54,6 +54,7 @@ class DownloadPanel(ctk.CTkFrame):
         self._is_downloading = False
         self._cached_video_resolutions: List[str] = list(DEFAULT_VIDEO_QUALITY_OPTIONS)
         self._probe_error_message: Optional[str] = None
+        self._is_compact_layout: Optional[bool] = None
 
         self.grid_columnconfigure(0, weight=1)
 
@@ -80,18 +81,17 @@ class DownloadPanel(ctk.CTkFrame):
         )
         self.selected_title_label.grid(row=0, column=1, padx=(10, 0), sticky="e")
 
-        # 2. Options Row: Format & Quality
+        # 2. Options Row: Format & Quality (Adaptive Grid)
         self.options_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.options_frame.pack(fill="x", padx=16, pady=(2, 6))
 
         # Format Segmented Button
-        fmt_label = ctk.CTkLabel(
+        self.fmt_label = ctk.CTkLabel(
             self.options_frame,
             text="Format:",
             font=Theme.FONT_BODY_BOLD,
             text_color=Theme.TEXT_SECONDARY,
         )
-        fmt_label.pack(side="left", padx=(0, 8))
 
         self.format_segmented = ctk.CTkSegmentedButton(
             self.options_frame,
@@ -104,7 +104,6 @@ class DownloadPanel(ctk.CTkFrame):
             command=self._on_format_changed,
         )
         self.format_segmented.set(config_manager.config.default_format)
-        self.format_segmented.pack(side="left", padx=(0, 24))
 
         # Dynamic Quality Selector (Audio bitrate for MP3 / Video resolution for MP4)
         self.quality_label = ctk.CTkLabel(
@@ -113,7 +112,6 @@ class DownloadPanel(ctk.CTkFrame):
             font=Theme.FONT_BODY_BOLD,
             text_color=Theme.TEXT_SECONDARY,
         )
-        self.quality_label.pack(side="left", padx=(0, 8))
 
         self.quality_option = ctk.CTkOptionMenu(
             self.options_frame,
@@ -126,7 +124,11 @@ class DownloadPanel(ctk.CTkFrame):
             command=self._on_quality_changed,
         )
         self.quality_option.set(AUDIO_QUALITY_OPTIONS[0])
-        self.quality_option.pack(side="left")
+
+        self._regrid_options(is_compact=False)
+
+        # Bind configure listener for responsive layout
+        self.bind("<Configure>", self._on_configure)
 
         # 3. Destination Row (Folder Picker)
         self.folder_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -430,3 +432,34 @@ class DownloadPanel(ctk.CTkFrame):
         if self.on_cancel:
             self.on_cancel()
         self.status_msg_label.configure(text="Cancelling download...")
+
+    def _on_configure(self, event):
+        """Adapts options row and title wraplength dynamically based on panel width."""
+        width = event.width
+        if width <= 1:
+            return
+
+        if hasattr(self, "selected_title_label") and self.selected_title_label.winfo_exists():
+            self.selected_title_label.configure(wraplength=max(180, width - 200))
+
+        is_compact = width < 660
+        if is_compact != self._is_compact_layout:
+            self._is_compact_layout = is_compact
+            self._regrid_options(is_compact)
+
+    def _regrid_options(self, is_compact: bool):
+        """Arranges format and quality controls into single row (wide) or 2 rows (compact)."""
+        if is_compact:
+            self.options_frame.grid_columnconfigure((0, 1), weight=0)
+            self.options_frame.grid_columnconfigure((2, 3), weight=0)
+            self.fmt_label.grid(row=0, column=0, padx=(0, 8), pady=3, sticky="w")
+            self.format_segmented.grid(row=0, column=1, padx=(0, 8), pady=3, sticky="w")
+            self.quality_label.grid(row=1, column=0, padx=(0, 8), pady=3, sticky="w")
+            self.quality_option.grid(row=1, column=1, padx=(0, 8), pady=3, sticky="w")
+        else:
+            self.options_frame.grid_columnconfigure((0, 1, 2, 3), weight=0)
+            self.fmt_label.grid(row=0, column=0, padx=(0, 8), pady=2, sticky="w")
+            self.format_segmented.grid(row=0, column=1, padx=(0, 20), pady=2, sticky="w")
+            self.quality_label.grid(row=0, column=2, padx=(0, 8), pady=2, sticky="w")
+            self.quality_option.grid(row=0, column=3, pady=2, sticky="w")
+

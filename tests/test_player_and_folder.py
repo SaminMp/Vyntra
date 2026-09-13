@@ -153,58 +153,37 @@ class TestDownloadFolderResolution(unittest.TestCase):
 
 
 class TestPlayerControls(unittest.TestCase):
-    """Tests for FFmpegMediaPlayer seeking, generation tokens, and playback controls stability."""
+    """Tests for SynchronizedMediaPlayer seeking, master clock, and playback controls stability."""
 
-    @patch("subprocess.Popen")
-    def test_seek_does_not_deadlock_and_increments_generation(self, mock_popen_cls):
-        """Verifies that seek() executes cleanly without deadlocking and increments generation."""
-        mock_proc = MagicMock()
-        mock_proc.stdout.read.return_value = b""
-        mock_proc.poll.return_value = None
-        mock_popen_cls.return_value = mock_proc
+    @patch("av.open")
+    def test_seek_and_master_clock_controls(self, mock_av_open):
+        """Verifies that seek() updates the authoritative master clock cleanly."""
+        mock_container = MagicMock()
+        mock_container.streams.video = [MagicMock(width=640, height=360, time_base=1/30, average_rate=30.0)]
+        mock_container.streams.video[0].codec_context.name = "h264"
+        mock_container.streams.video[0].start_time = 0
+        mock_container.streams.audio = []
+        mock_av_open.return_value = mock_container
 
         player = FFmpegMediaPlayer("fake_media.mp4")
-        self.assertEqual(player._generation, 1)
+        self.assertAlmostEqual(player.get_pts(), 0.0, delta=0.5)
 
-        # Seek should not deadlock
+        # Seek should update authoritative master clock
         player.seek(15.0)
-        self.assertEqual(player._generation, 2)
-        self.assertEqual(player.get_pts(), 15.0)
+        self.assertAlmostEqual(player.get_pts(), 15.0, delta=0.5)
 
         # Relative seek
         player.seek(10.0, relative=True)
-        self.assertEqual(player._generation, 3)
-        self.assertEqual(player.get_pts(), 25.0)
+        self.assertAlmostEqual(player.get_pts(), 25.0, delta=0.5)
+
+        # Pause and resume
+        player.set_pause(True)
+        self.assertTrue(player._is_paused)
+        player.set_pause(False)
+        self.assertFalse(player._is_paused)
 
         player.close_player()
         self.assertTrue(player._is_closed)
-
-    @patch("subprocess.Popen")
-    def test_obsolete_reader_thread_does_not_inject_eof(self, mock_popen_cls):
-        """Verifies that reader loops from earlier generations do not inject EOF into frame queue."""
-        mock_proc = MagicMock()
-        mock_proc.stdout.read.return_value = b""
-        mock_proc.poll.return_value = None
-        mock_popen_cls.return_value = mock_proc
-
-        player = FFmpegMediaPlayer("fake_media.mp4")
-        gen1 = player._generation
-
-        # Now simulate seek which increments generation to 2
-        player.seek(10.0)
-        self.assertEqual(player._generation, 2)
-
-        # Drain the queue so it is completely empty
-        while not player._frame_queue.empty():
-            player._frame_queue.get_nowait()
-
-        # If obsolete gen1 thread exits, it should NOT put 'eof' because gen1 != self._generation
-        player._frame_reader_loop(gen1, mock_proc)
-
-        # Frame queue should remain empty (no eof inserted by obsolete generation)
-        self.assertTrue(player._frame_queue.empty())
-
-        player.close_player()
 
     def test_modal_seek_relative_and_release(self):
         """Verifies VideoPlayerModal seek helper functions."""
@@ -228,6 +207,64 @@ class TestPlayerControls(unittest.TestCase):
         VideoPlayerModal._seek_relative(modal, -10.0)
         modal._player.seek.assert_called_with(20.0, relative=False)
         modal.seek_slider.set.assert_called_with(20.0)
+
+
+class TestStreamPlaybackAndVersioning(unittest.TestCase):
+    """Tests for direct stream playback without downloads and centralized versioning."""
+
+    def test_stream_payload_structure(self):
+        """Verifies StreamPayload is a string subclass with separate video/audio URLs and headers."""
+        from vyntra.services.youtube_service import StreamPayload
+        payload = StreamPayload(
+            video_url="https://youtube.com/video_stream_720p",
+            audio_url="https://youtube.com/audio_stream_m4a",
+            http_headers={"User-Agent": "CustomAgent/1.0", "Cookie": "test=1"},
+        )
+        self.assertIsInstance(payload, str)
+        self.assertEqual(payload, "https://youtube.com/video_stream_720p")
+        self.assertEqual(payload.video_url, "https://youtube.com/video_stream_720p")
+        self.assertEqual(payload.audio_url, "https://youtube.com/audio_stream_m4a")
+        self.assertEqual(payload.http_headers["User-Agent"], "CustomAgent/1.0")
+
+    @patch("av.open")
+    def test_synchronized_media_player_single_pipeline(self, mock_av_open):
+        """Verifies SynchronizedMediaPlayer initializes a single unified pipeline rather than two processes."""
+        from vyntra.services.youtube_service import StreamPayload
+        mock_container = MagicMock()
+        mock_container.streams.video = [MagicMock(width=1280, height=720, time_base=1/30, average_rate=30.0)]
+        mock_container.streams.video[0].codec_context.name = "h264"
+        mock_container.streams.video[0].start_time = 0
+        mock_container.streams.audio = [MagicMock(rate=44100, time_base=1/44100)]
+        mock_container.streams.audio[0].codec_context.name = "aac"
+        mock_container.streams.audio[0].start_time = 0
+        mock_av_open.return_value = mock_container
+
+        payload = StreamPayload(
+            video_url="https://googlevideo.com/video_stream",
+            audio_url="https://googlevideo.com/audio_stream",
+            http_headers={"User-Agent": "TestUA/2.0"},
+        )
+
+        player = FFmpegMediaPlayer(payload)
+
+        # Verify unified single-engine pipeline opened both stream endpoints
+        self.assertTrue(mock_av_open.called)
+        self.assertEqual(player.video_url, "https://googlevideo.com/video_stream")
+        self.assertEqual(player.audio_url, "https://googlevideo.com/audio_stream")
+
+        player.close_player()
+        self.assertTrue(player._is_closed)
+
+    def test_version_centralization(self):
+        """Verifies Vyntra centralized version string format and single source of truth."""
+        import vyntra
+        self.assertTrue(hasattr(vyntra, "__version__"))
+        version = vyntra.__version__
+        self.assertEqual(version, "1.1.3")
+        parts = version.split(".")
+        self.assertEqual(len(parts), 3, "Version must follow MAJOR.MINOR.PATCH format")
+        for part in parts:
+            self.assertTrue(part.isdigit(), f"Version part {part} must be numeric")
 
 
 if __name__ == "__main__":

@@ -74,11 +74,19 @@ def create_icon():
     img.save(png_path, "PNG")
     print(f"Saved PNG to {png_path}")
     
-    # Save multi-size ICO
+    # Save multi-size ICO (Windows)
     ico_path = assets_dir / "icon.ico"
     sizes = [(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)]
     img.save(ico_path, format="ICO", sizes=sizes)
     print(f"Saved ICO to {ico_path}")
+
+    # Save Apple macOS ICNS
+    icns_path = assets_dir / "icon.icns"
+    try:
+        img.save(icns_path, format="ICNS")
+        print(f"Saved macOS ICNS to {icns_path}")
+    except Exception as e:
+        print(f"Note: ICNS generation skipped: {e}")
 
 if __name__ == "__main__":
     create_icon()

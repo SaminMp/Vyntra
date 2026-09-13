@@ -112,6 +112,53 @@ class ImageService:
         cropped = resized.crop((left, top, right, bottom))
         return cropped
 
+    def get_image_async(
+        self,
+        url: str,
+        on_success: Callable[[Image.Image], None],
+        on_error: Optional[Callable[[Exception], None]] = None,
+        size: Optional[Tuple[int, int]] = None,
+    ) -> None:
+        """
+        Asynchronously fetches an image from URL and passes PIL Image to on_success.
+        Safely handles missing or invalid URLs without throwing unhandled exceptions.
+        """
+        if not url:
+            if on_error:
+                on_error(ValueError("Empty image URL"))
+            return
+
+        with self._lock:
+            if url in self._cache:
+                cached_pil = self._cache[url]
+                if size:
+                    cached_pil = self._fit_and_resize(cached_pil, size)
+                on_success(cached_pil)
+                return
+
+        def _worker():
+            try:
+                resp = self._session.get(url, timeout=6)
+                if resp.status_code == 200:
+                    pil_img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
+                    if size:
+                        pil_img = self._fit_and_resize(pil_img, size)
+                    with self._lock:
+                        if len(self._cache) >= self._cache_limit:
+                            self._cache.pop(next(iter(self._cache)))
+                        self._cache[url] = pil_img
+                    on_success(pil_img)
+                else:
+                    logger.debug("Failed fetching image: HTTP %d", resp.status_code)
+                    if on_error:
+                        on_error(RuntimeError(f"HTTP {resp.status_code}"))
+            except Exception as err:
+                logger.debug("Image fetch error (%s): %s", url, err)
+                if on_error:
+                    on_error(err)
+
+        self._executor.submit(_worker)
+
 
 # Global singleton instance
 image_service = ImageService()

@@ -24,7 +24,10 @@ class SearchBar(ctk.CTkFrame):
         self.on_search = on_search
         self._is_searching = False
 
-        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=0)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(2, weight=0)
+        self.grid_columnconfigure(3, weight=0)
         self.grid_rowconfigure(0, weight=1)
 
         # Search Icon prefix
@@ -49,7 +52,6 @@ class SearchBar(ctk.CTkFrame):
             height=38,
         )
         self.entry.grid(row=0, column=1, padx=4, pady=6, sticky="ew")
-        self.grid_columnconfigure(1, weight=1)
 
         # Clear Button
         self.clear_btn = ctk.CTkButton(

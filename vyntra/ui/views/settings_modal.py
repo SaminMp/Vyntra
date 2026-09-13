@@ -8,6 +8,7 @@ from tkinter import filedialog
 from typing import Callable, Optional
 import customtkinter as ctk
 
+from vyntra import __version__
 from vyntra.config import config_manager
 from vyntra.models import AudioQuality, MediaFormat
 from vyntra.services.auth_service import auth_service
@@ -22,9 +23,9 @@ class SettingsModal(ctk.CTkToplevel):
         super().__init__(master, **kwargs)
 
         self.on_saved = on_saved
-        self.title("Vyntra Settings")
-        self.geometry("600x620")
-        self.minsize(560, 580)
+        self.title(f"Vyntra Settings - v{__version__}")
+        self.geometry("640x700")
+        self.minsize(580, 560)
         self.configure(fg_color=Theme.BG_MAIN)
 
         self.transient(master)
@@ -39,7 +40,7 @@ class SettingsModal(ctk.CTkToplevel):
 
         title_label = ctk.CTkLabel(
             header_frame,
-            text="⚙️ Preferences & Account",
+            text=f"⚙️ Preferences & Account  (v{__version__})",
             font=Theme.FONT_TITLE,
             text_color=Theme.TEXT_PRIMARY,
         )
@@ -56,6 +57,7 @@ class SettingsModal(ctk.CTkToplevel):
 
         self._build_general_settings()
         self._build_auth_settings()
+        self._build_platform_settings()
         self._build_diagnostics_section()
         self._build_action_buttons()
 
@@ -294,14 +296,13 @@ class SettingsModal(ctk.CTkToplevel):
         )
         sel_lbl.pack(side="left", padx=(0, 10))
 
-        browser_options = [
-            "Guest (No Session)",
-            "Firefox Session",
-            "Chrome Session",
-            "Edge Session",
-            "Brave Session",
-            "Custom Cookie File",
-        ]
+        browser_options = ["Guest (No Session)"]
+        if platform.system() == "Darwin":
+            browser_options.extend(["Safari Session", "Chrome Session", "Firefox Session", "Brave Session", "Edge Session"])
+        else:
+            browser_options.extend(["Firefox Session", "Chrome Session", "Edge Session", "Brave Session"])
+        browser_options.append("Custom Cookie File")
+
         curr_mode = getattr(config_manager.config, "youtube_media_auth_mode", "none")
         curr_browser = getattr(config_manager.config, "youtube_media_browser", "firefox").lower()
 
@@ -352,10 +353,26 @@ class SettingsModal(ctk.CTkToplevel):
         if default_sel == "Custom Cookie File":
             self.cookie_file_frame.pack(fill="x", padx=14, pady=(2, 6))
 
-        # Privacy / Consent note
+        # Privacy / Consent note tailored per OS
+        if platform.system() == "Windows":
+            os_note = (
+                "💡 Windows Note: Chrome 127+ & Edge use App-Bound Encryption preventing external cookie reading. "
+                "Firefox Session or Custom Cookie File are recommended."
+            )
+        elif platform.system() == "Darwin":
+            os_note = (
+                "💡 Mac Note: Safari, Chrome, and Firefox authenticate via macOS Keychain. "
+                "Grant Keychain or Full Disk Access if prompted by macOS."
+            )
+        else:
+            os_note = "💡 Tip: Firefox Session or Custom Cookie File recommended for desktop sessions."
+
         self.consent_notice_lbl = ctk.CTkLabel(
             media_box,
-            text="🔒 Vyntra will use your existing YouTube browser session in-memory to authenticate media requests. Your Google password is never collected or stored.",
+            text=(
+                f"🔒 Vyntra accesses your YouTube session in-memory only to authenticate media requests. Your password is never captured.\n"
+                f"{os_note}"
+            ),
             font=Theme.FONT_CAPTION,
             text_color=Theme.TEXT_MUTED,
             wraplength=470,
@@ -363,13 +380,13 @@ class SettingsModal(ctk.CTkToplevel):
         )
         self.consent_notice_lbl.pack(padx=14, pady=(2, 8), anchor="w")
 
-        # Test Media Access Button row
+        # Test Media Access and Diagnostics Button row
         test_media_row = ctk.CTkFrame(media_box, fg_color="transparent")
         test_media_row.pack(fill="x", padx=14, pady=(0, 10))
 
         self.test_btn = ctk.CTkButton(
             test_media_row,
-            text="🧪 Test Connection & Media Access",
+            text="🧪 Test Connection & Media",
             font=Theme.FONT_CAPTION,
             height=30,
             corner_radius=Theme.RADIUS_BUTTON,
@@ -377,7 +394,19 @@ class SettingsModal(ctk.CTkToplevel):
             hover_color=Theme.BG_CARD_HOVER,
             command=self._run_test,
         )
-        self.test_btn.pack(side="left")
+        self.test_btn.pack(side="left", padx=(0, 8))
+
+        self.diag_btn = ctk.CTkButton(
+            test_media_row,
+            text="📋 Run Diagnostics",
+            font=Theme.FONT_CAPTION,
+            height=30,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_MUTED,
+            hover_color=Theme.BG_CARD_HOVER,
+            command=self._run_diagnostics,
+        )
+        self.diag_btn.pack(side="left")
 
         row += 1
         self._next_row = row
@@ -396,6 +425,151 @@ class SettingsModal(ctk.CTkToplevel):
         if chosen:
             self.cookie_entry.delete(0, "end")
             self.cookie_entry.insert(0, chosen)
+
+    def _build_platform_settings(self):
+        """Platform-specific settings for Instagram, TikTok, and Spotify."""
+        row = self._next_row
+
+        # Divider
+        divider = ctk.CTkFrame(self.scroll_frame, height=1, fg_color=Theme.BORDER_CARD)
+        divider.grid(row=row, column=0, columnspan=2, padx=16, pady=10, sticky="ew")
+        row += 1
+
+        # Platform Header
+        plat_header = ctk.CTkLabel(
+            self.scroll_frame,
+            text="🌐 Multi-Platform Configuration",
+            font=Theme.FONT_HEADER,
+            text_color=Theme.TEXT_ACCENT,
+        )
+        plat_header.grid(row=row, column=0, columnspan=2, padx=16, pady=(12, 2), sticky="w")
+        row += 1
+
+        plat_sub = ctk.CTkLabel(
+            self.scroll_frame,
+            text="Configure optional credentials and session files for Instagram, TikTok, and Spotify.",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_MUTED,
+        )
+        plat_sub.grid(row=row, column=0, columnspan=2, padx=16, pady=(0, 6), sticky="w")
+        row += 1
+
+        # --- Spotify Box ---
+        spotify_box = ctk.CTkFrame(self.scroll_frame, fg_color=Theme.BG_MAIN, corner_radius=Theme.RADIUS_BUTTON)
+        spotify_box.grid(row=row, column=0, columnspan=2, padx=16, pady=(2, 8), sticky="ew")
+        spotify_box.grid_columnconfigure(1, weight=1)
+
+        sp_title = ctk.CTkLabel(
+            spotify_box,
+            text="🟢 Spotify Web API (Optional for Full Catalog Search)",
+            font=Theme.FONT_BODY_BOLD,
+            text_color=Theme.TEXT_PRIMARY,
+        )
+        sp_title.grid(row=0, column=0, columnspan=2, padx=14, pady=(8, 2), sticky="w")
+
+        sp_desc = ctk.CTkLabel(
+            spotify_box,
+            text="Enables official Spotify catalog search. (Track URLs & 30s previews work without credentials).",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_MUTED,
+            justify="left",
+        )
+        sp_desc.grid(row=1, column=0, columnspan=2, padx=14, pady=(0, 6), sticky="w")
+
+        id_lbl = ctk.CTkLabel(spotify_box, text="Client ID:", font=Theme.FONT_CAPTION, text_color=Theme.TEXT_SECONDARY)
+        id_lbl.grid(row=2, column=0, padx=(14, 8), pady=3, sticky="w")
+        self.spotify_id_entry = ctk.CTkEntry(spotify_box, font=Theme.FONT_CAPTION, height=28)
+        self.spotify_id_entry.insert(0, getattr(config_manager.config, "spotify_client_id", ""))
+        self.spotify_id_entry.grid(row=2, column=1, padx=(0, 14), pady=3, sticky="ew")
+
+        sec_lbl = ctk.CTkLabel(spotify_box, text="Client Secret:", font=Theme.FONT_CAPTION, text_color=Theme.TEXT_SECONDARY)
+        sec_lbl.grid(row=3, column=0, padx=(14, 8), pady=(3, 10), sticky="w")
+        self.spotify_secret_entry = ctk.CTkEntry(spotify_box, font=Theme.FONT_CAPTION, height=28, show="*")
+        self.spotify_secret_entry.insert(0, getattr(config_manager.config, "spotify_client_secret", ""))
+        self.spotify_secret_entry.grid(row=3, column=1, padx=(0, 14), pady=(3, 10), sticky="ew")
+
+        row += 1
+
+        # --- Instagram & TikTok Box ---
+        social_box = ctk.CTkFrame(self.scroll_frame, fg_color=Theme.BG_MAIN, corner_radius=Theme.RADIUS_BUTTON)
+        social_box.grid(row=row, column=0, columnspan=2, padx=16, pady=(2, 10), sticky="ew")
+        social_box.grid_columnconfigure(1, weight=1)
+
+        soc_title = ctk.CTkLabel(
+            social_box,
+            text="📸 Instagram & 🎵 TikTok (Optional Session Cookies)",
+            font=Theme.FONT_BODY_BOLD,
+            text_color=Theme.TEXT_PRIMARY,
+        )
+        soc_title.grid(row=0, column=0, columnspan=3, padx=14, pady=(8, 2), sticky="w")
+
+        soc_desc = ctk.CTkLabel(
+            social_box,
+            text="Provide Netscape-format cookie files to access age-restricted or private posts/reels.",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_MUTED,
+            justify="left",
+        )
+        soc_desc.grid(row=1, column=0, columnspan=3, padx=14, pady=(0, 6), sticky="w")
+
+        # Instagram Cookie
+        ig_lbl = ctk.CTkLabel(social_box, text="Instagram Cookies:", font=Theme.FONT_CAPTION, text_color=Theme.TEXT_SECONDARY)
+        ig_lbl.grid(row=2, column=0, padx=(14, 8), pady=3, sticky="w")
+        self.insta_cookie_entry = ctk.CTkEntry(social_box, font=Theme.FONT_CAPTION, height=28)
+        self.insta_cookie_entry.insert(0, getattr(config_manager.config, "instagram_custom_cookie_path", ""))
+        self.insta_cookie_entry.grid(row=2, column=1, padx=(0, 6), pady=3, sticky="ew")
+        ig_browse_btn = ctk.CTkButton(
+            social_box,
+            text="Browse...",
+            font=Theme.FONT_CAPTION,
+            height=28,
+            width=65,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_MUTED,
+            hover_color=Theme.BG_CARD_HOVER,
+            command=self._browse_insta_cookie,
+        )
+        ig_browse_btn.grid(row=2, column=2, padx=(0, 14), pady=3)
+
+        # TikTok Cookie
+        tt_lbl = ctk.CTkLabel(social_box, text="TikTok Cookies:", font=Theme.FONT_CAPTION, text_color=Theme.TEXT_SECONDARY)
+        tt_lbl.grid(row=3, column=0, padx=(14, 8), pady=(3, 10), sticky="w")
+        self.tiktok_cookie_entry = ctk.CTkEntry(social_box, font=Theme.FONT_CAPTION, height=28)
+        self.tiktok_cookie_entry.insert(0, getattr(config_manager.config, "tiktok_custom_cookie_path", ""))
+        self.tiktok_cookie_entry.grid(row=3, column=1, padx=(0, 6), pady=(3, 10), sticky="ew")
+        tt_browse_btn = ctk.CTkButton(
+            social_box,
+            text="Browse...",
+            font=Theme.FONT_CAPTION,
+            height=28,
+            width=65,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_MUTED,
+            hover_color=Theme.BG_CARD_HOVER,
+            command=self._browse_tiktok_cookie,
+        )
+        tt_browse_btn.grid(row=3, column=2, padx=(0, 14), pady=(3, 10))
+
+        row += 1
+        self._next_row = row
+
+    def _browse_insta_cookie(self):
+        chosen = filedialog.askopenfilename(
+            title="Select Instagram Cookie File",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+        if chosen:
+            self.insta_cookie_entry.delete(0, "end")
+            self.insta_cookie_entry.insert(0, chosen)
+
+    def _browse_tiktok_cookie(self):
+        chosen = filedialog.askopenfilename(
+            title="Select TikTok Cookie File",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+        if chosen:
+            self.tiktok_cookie_entry.delete(0, "end")
+            self.tiktok_cookie_entry.insert(0, chosen)
 
     def _build_diagnostics_section(self):
         """System diagnostics section."""
@@ -466,10 +640,16 @@ class SettingsModal(ctk.CTkToplevel):
     def _on_signin_done(self, success: bool, msg: str):
         self.signin_btn.configure(state="normal", text="🌐 Sign in with Google")
         status_key, label, details = auth_service.get_connection_status()
-        self.auth_status_lbl.configure(
-            text=f"{label}  —  {msg}",
-            text_color=Theme.SUCCESS if success else Theme.TEXT_MUTED,
-        )
+        if success:
+            self.auth_status_lbl.configure(
+                text=f"{label}  —  {msg}",
+                text_color=Theme.SUCCESS,
+            )
+        else:
+            self.auth_status_lbl.configure(
+                text=f"⚠️ Google Sign-In Failed: {msg}",
+                text_color=Theme.WARNING,
+            )
 
     def _run_signout(self):
         auth_service.disconnect()
@@ -480,9 +660,11 @@ class SettingsModal(ctk.CTkToplevel):
         self.test_btn.configure(state="disabled", text="Testing...")
         self.media_status_lbl.configure(text="Testing YouTube media extraction...", text_color=Theme.TEXT_MUTED)
 
-        # Apply current selection to config temporarily for test
+    def _apply_media_settings_to_config(self):
         browser_choice = self.media_browser_option.get()
-        if "Firefox" in browser_choice:
+        if "Safari" in browser_choice:
+            config_manager.update(youtube_media_auth_mode="browser", youtube_media_browser="safari")
+        elif "Firefox" in browser_choice:
             config_manager.update(youtube_media_auth_mode="browser", youtube_media_browser="firefox")
         elif "Chrome" in browser_choice:
             config_manager.update(youtube_media_auth_mode="browser", youtube_media_browser="chrome")
@@ -496,6 +678,12 @@ class SettingsModal(ctk.CTkToplevel):
         else:
             config_manager.update(youtube_media_auth_mode="none")
 
+    def _run_test(self):
+        self.test_btn.configure(state="disabled", text="Testing...")
+        self.media_status_lbl.configure(text="Testing YouTube media extraction...", text_color=Theme.TEXT_MUTED)
+
+        self._apply_media_settings_to_config()
+
         def _worker():
             success, msg = auth_service.test_connection()
             self.after(0, lambda: self._on_test_done(success, msg))
@@ -503,7 +691,7 @@ class SettingsModal(ctk.CTkToplevel):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_test_done(self, success: bool, msg: str):
-        self.test_btn.configure(state="normal", text="🧪 Test Connection & Media Access")
+        self.test_btn.configure(state="normal", text="🧪 Test Connection & Media")
         _, media_label, _ = auth_service.get_media_access_status()
         self.media_status_lbl.configure(
             text=f"{media_label}  —  {msg.splitlines()[-1]}",
@@ -514,6 +702,85 @@ class SettingsModal(ctk.CTkToplevel):
             text=f"{label}  —  {msg.splitlines()[0]}",
             text_color=Theme.SUCCESS if status_key == "connected" else Theme.TEXT_MUTED,
         )
+
+    def _run_diagnostics(self):
+        self._apply_media_settings_to_config()
+        self.diag_btn.configure(state="disabled", text="Running Diagnostics...")
+
+        def _worker():
+            from vyntra.services.youtube_service import youtube_service
+            report = youtube_service.diagnose_video("Obvg5jVCvxc")
+            self.after(0, lambda: self._on_diagnostics_done(report))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_diagnostics_done(self, report: str):
+        self.diag_btn.configure(state="normal", text="📋 Run Diagnostics")
+        self._show_diagnostics_modal(report)
+
+    def _show_diagnostics_modal(self, report: str):
+        diag_win = ctk.CTkToplevel(self)
+        diag_win.title("Vyntra YouTube Diagnostics")
+        diag_win.geometry("580x540")
+        diag_win.minsize(500, 400)
+        diag_win.configure(fg_color=Theme.BG_MAIN)
+        diag_win.transient(self)
+        diag_win.grab_set()
+
+        header = ctk.CTkLabel(
+            diag_win,
+            text="📋 Vyntra YouTube Diagnostics",
+            font=Theme.FONT_TITLE,
+            text_color=Theme.TEXT_PRIMARY,
+        )
+        header.pack(anchor="w", padx=20, pady=(16, 8))
+
+        textbox = ctk.CTkTextbox(
+            diag_win,
+            font=("Consolas", 12),
+            fg_color=Theme.BG_CARD,
+            text_color=Theme.TEXT_MAIN,
+            border_color=Theme.BORDER_CARD,
+            border_width=1,
+            corner_radius=Theme.RADIUS_BUTTON,
+        )
+        textbox.pack(fill="both", expand=True, padx=20, pady=(0, 12))
+        textbox.insert("1.0", report)
+        textbox.configure(state="disabled")
+
+        btn_bar = ctk.CTkFrame(diag_win, fg_color="transparent")
+        btn_bar.pack(fill="x", padx=20, pady=(0, 16))
+
+        def _copy():
+            diag_win.clipboard_clear()
+            diag_win.clipboard_append(report)
+            copy_btn.configure(text="✓ Copied!")
+            diag_win.after(2000, lambda: copy_btn.configure(text="📋 Copy to Clipboard"))
+
+        copy_btn = ctk.CTkButton(
+            btn_bar,
+            text="📋 Copy to Clipboard",
+            font=Theme.FONT_CAPTION,
+            height=32,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_MUTED,
+            hover_color=Theme.BG_CARD_HOVER,
+            command=_copy,
+        )
+        copy_btn.pack(side="left")
+
+        close_diag_btn = ctk.CTkButton(
+            btn_bar,
+            text="Close",
+            font=Theme.FONT_CAPTION,
+            height=32,
+            width=80,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.PRIMARY,
+            hover_color=Theme.PRIMARY_HOVER,
+            command=diag_win.destroy,
+        )
+        close_diag_btn.pack(side="right")
 
     def _on_format_toggled(self, value: str):
         if value == MediaFormat.MP3.value:
@@ -576,6 +843,12 @@ class SettingsModal(ctk.CTkToplevel):
                     v_val = res
                     break
             update_kwargs["video_quality"] = v_val
+
+        # Multi-platform settings
+        update_kwargs["instagram_custom_cookie_path"] = self.insta_cookie_entry.get().strip()
+        update_kwargs["tiktok_custom_cookie_path"] = self.tiktok_cookie_entry.get().strip()
+        update_kwargs["spotify_client_id"] = self.spotify_id_entry.get().strip()
+        update_kwargs["spotify_client_secret"] = self.spotify_secret_entry.get().strip()
 
         config_manager.update(**update_kwargs)
 

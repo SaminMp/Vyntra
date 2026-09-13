@@ -46,7 +46,7 @@ class WatchLaterService:
             conn.close()
 
     def _init_db(self):
-        """Initializes the watch_later table if it does not already exist."""
+        """Initializes the watch_later table if it does not already exist and applies migrations."""
         with self._lock:
             with self._db_connection() as conn:
                 conn.execute("""
@@ -59,14 +59,22 @@ class WatchLaterService:
                         thumbnail_url TEXT,
                         url TEXT,
                         views_formatted TEXT,
-                        added_at TEXT NOT NULL
+                        added_at TEXT NOT NULL,
+                        platform TEXT DEFAULT 'youtube'
                     )
                 """)
                 conn.commit()
 
+                # Migration for existing databases created before v1.1.0
+                try:
+                    conn.execute("ALTER TABLE watch_later ADD COLUMN platform TEXT DEFAULT 'youtube'")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+
     def add(self, result: SearchResult) -> bool:
         """
-        Adds a video to Watch Later.
+        Adds a media item to Watch Later.
         Returns True if added successfully, False if already present (duplicate).
         """
         with self._lock:
@@ -80,13 +88,14 @@ class WatchLaterService:
                         return False
 
                     now_iso = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    platform_val = str(getattr(result, "platform", "youtube") or "youtube")
                     conn.execute(
                         """
                         INSERT INTO watch_later (
                             video_id, title, channel, duration_seconds,
                             duration_formatted, thumbnail_url, url,
-                            views_formatted, added_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            views_formatted, added_at, platform
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             result.video_id,
@@ -98,13 +107,14 @@ class WatchLaterService:
                             result.url or f"https://www.youtube.com/watch?v={result.video_id}",
                             result.views_formatted or "",
                             now_iso,
+                            platform_val,
                         ),
                     )
                     conn.commit()
-                    logger.info("Saved video '%s' (%s) to Watch Later.", result.display_title, result.video_id)
+                    logger.info("Saved media '%s' (%s, %s) to Watch Later.", result.display_title, result.video_id, platform_val)
                     return True
             except Exception as e:
-                logger.error("Error saving video to Watch Later: %s", e)
+                logger.error("Error saving media to Watch Later: %s", e)
                 return False
 
     def remove(self, video_id: str) -> bool:
@@ -143,12 +153,18 @@ class WatchLaterService:
                         """
                         SELECT video_id, title, channel, duration_seconds,
                                duration_formatted, thumbnail_url, url,
-                               views_formatted, added_at
+                               views_formatted, added_at, platform
                         FROM watch_later
                         ORDER BY rowid DESC
                         """
                     )
                     for row in cursor.fetchall():
+                        platform_val = "youtube"
+                        try:
+                            platform_val = row["platform"] or "youtube"
+                        except (IndexError, KeyError):
+                            pass
+
                         res = SearchResult(
                             video_id=row["video_id"],
                             title=row["title"],
@@ -158,6 +174,7 @@ class WatchLaterService:
                             thumbnail_url=row["thumbnail_url"],
                             url=row["url"],
                             views_formatted=row["views_formatted"],
+                            platform=platform_val,
                         )
                         items.append(WatchLaterItem(result=res, added_at=row["added_at"]))
             except Exception as e:

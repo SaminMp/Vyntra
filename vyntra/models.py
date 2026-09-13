@@ -8,6 +8,30 @@ from typing import Optional
 import uuid
 
 
+class Platform(str, Enum):
+    """Supported media platforms."""
+    YOUTUBE = "youtube"
+    INSTAGRAM = "instagram"
+    TIKTOK = "tiktok"
+    SPOTIFY = "spotify"
+
+
+@dataclass
+class PlatformCapabilities:
+    """Defines the technical features supported by a platform."""
+    platform_id: str
+    display_name: str
+    icon: str
+    supports_search: bool = False
+    supports_url_input: bool = True
+    supports_video_playback: bool = True
+    supports_audio_preview: bool = True
+    supports_mp4: bool = True
+    supports_mp3: bool = True
+    supports_video_quality: bool = False
+    supports_audio_quality: bool = True
+
+
 class MediaFormat(str, Enum):
     """Supported output formats."""
     MP3 = "MP3"
@@ -52,8 +76,11 @@ class PlaybackState(str, Enum):
 
 
 @dataclass
-class SearchResult:
-    """Represents a single YouTube video search result."""
+class MediaItem:
+    """
+    Unified representation of a media item across all platforms.
+    100% backward-compatible with SearchResult.
+    """
     video_id: str
     title: str
     channel: str
@@ -65,11 +92,20 @@ class SearchResult:
     url: str = ""
     description: Optional[str] = ""
     publish_date: Optional[str] = ""
+    # Multi-platform fields
+    platform: str = Platform.YOUTUBE.value
+    album: Optional[str] = None
+    preview_url: Optional[str] = None
+    audio_source_url: Optional[str] = None
 
     @property
     def display_title(self) -> str:
         """Returns clean title without leading/trailing whitespace."""
-        return self.title.strip() if self.title else "Untitled Video"
+        return self.title.strip() if self.title else "Untitled Media"
+
+
+# Backward-compatible alias: SearchResult is MediaItem
+SearchResult = MediaItem
 
 
 @dataclass
@@ -88,10 +124,11 @@ class ProgressInfo:
 @dataclass
 class DownloadTask:
     """Represents an active or queued download job."""
-    result: SearchResult
+    result: MediaItem
     format: MediaFormat
     save_directory: str
     task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    platform: str = Platform.YOUTUBE.value
     audio_quality: AudioQuality = AudioQuality.BEST
     video_quality: VideoQuality = VideoQuality.BEST
     selected_quality: str = "best"
@@ -100,3 +137,8 @@ class DownloadTask:
     output_filepath: Optional[str] = None
     error_message: Optional[str] = None
     is_cancelled: bool = False
+
+    def __post_init__(self):
+        # Auto-inherit platform from result if not explicitly overridden
+        if self.result and hasattr(self.result, "platform") and self.result.platform:
+            self.platform = self.result.platform

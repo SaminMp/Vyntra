@@ -62,6 +62,12 @@ class AppConfig:
     youtube_media_status: str = "unconfigured"  # "ready", "unconfigured", "failed"
     youtube_media_status_message: str = ""
 
+    # Multi-platform settings
+    instagram_custom_cookie_path: str = ""
+    tiktok_custom_cookie_path: str = ""
+    spotify_client_id: str = ""
+    spotify_client_secret: str = ""
+
     def __post_init__(self):
         if not self.download_directory:
             # Default to ~/Downloads/Vyntra or ~/Downloads

@@ -8,6 +8,7 @@ import unittest
 
 from vyntra.models import AudioQuality, DownloadTask, MediaFormat, SearchResult
 from vyntra.services.download_service import download_service
+from vyntra.services.ffmpeg_service import ffmpeg_service
 from vyntra.services.search_service import search_service
 from vyntra.ui.views.player_modal import VideoPlayerModal
 import customtkinter as ctk
@@ -17,6 +18,7 @@ class TestQualitySelection(unittest.TestCase):
     """Verifies that MP3 and MP4 download tasks correctly generate appropriate quality formats."""
 
     def setUp(self):
+        ffmpeg_service.get_status(force_refresh=True)
         self.dummy_result = SearchResult(
             video_id="dummy123",
             title="Test Song",

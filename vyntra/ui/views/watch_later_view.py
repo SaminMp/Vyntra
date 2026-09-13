@@ -84,9 +84,18 @@ class WatchLaterCard(ctk.CTkFrame):
         )
         self.title_label.grid(row=0, column=0, sticky="nw", pady=(0, 4))
 
+        platform_name = str(getattr(self.result, "platform", "youtube") or "youtube").lower()
+        platform_icons = {
+            "youtube": "🔴 YouTube",
+            "instagram": "📸 Instagram",
+            "tiktok": "🎵 TikTok",
+            "spotify": "🟢 Spotify",
+        }
+        platform_badge_text = platform_icons.get(platform_name, "🔴 YouTube")
+
         self.channel_label = ctk.CTkLabel(
             self.info_frame,
-            text=f"👤 {self.result.channel}",
+            text=f"{platform_badge_text}  •  👤 {self.result.channel}",
             font=Theme.FONT_BODY,
             text_color=Theme.TEXT_ACCENT,
             anchor="w",
@@ -111,10 +120,11 @@ class WatchLaterCard(ctk.CTkFrame):
         self.action_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.action_frame.grid(row=0, column=2, padx=(6, 14), pady=10, sticky="e")
 
-        # Watch button
+        # Watch / Preview button
+        play_label = "▶ Preview" if platform_name == "spotify" else "▶ Watch"
         self.watch_btn = ctk.CTkButton(
             self.action_frame,
-            text="▶ Watch",
+            text=play_label,
             font=Theme.FONT_CAPTION,
             width=78,
             height=32,
@@ -139,19 +149,20 @@ class WatchLaterCard(ctk.CTkFrame):
         )
         self.mp3_btn.pack(side="left", padx=(0, 6))
 
-        # Download MP4 button
-        self.mp4_btn = ctk.CTkButton(
-            self.action_frame,
-            text="⬇ MP4",
-            font=Theme.FONT_CAPTION,
-            width=68,
-            height=32,
-            corner_radius=Theme.RADIUS_BUTTON,
-            fg_color=Theme.BG_MUTED,
-            hover_color=Theme.PRIMARY_HOVER,
-            command=lambda: self.on_download(self.result, MediaFormat.MP4),
-        )
-        self.mp4_btn.pack(side="left", padx=(0, 6))
+        # Download MP4 button (strictly excluded for Spotify)
+        if platform_name != "spotify":
+            self.mp4_btn = ctk.CTkButton(
+                self.action_frame,
+                text="⬇ MP4",
+                font=Theme.FONT_CAPTION,
+                width=68,
+                height=32,
+                corner_radius=Theme.RADIUS_BUTTON,
+                fg_color=Theme.BG_MUTED,
+                hover_color=Theme.PRIMARY_HOVER,
+                command=lambda: self.on_download(self.result, MediaFormat.MP4),
+            )
+            self.mp4_btn.pack(side="left", padx=(0, 6))
 
         # Remove button
         self.remove_btn = ctk.CTkButton(

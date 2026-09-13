@@ -110,6 +110,60 @@ class TestYouTubeAuthManager(unittest.TestCase):
         self.assertIsInstance(paths, list)
         self.assertGreater(len(paths), 0)
 
+    def test_oauth_state_machine_and_listeners(self):
+        """Verify OAuthState transitions and observer notifications."""
+        from vyntra.services.auth_manager import OAuthState
+        manager = YouTubeAuthManager()
+        recorded_states = []
+
+        def listener(st, msg):
+            recorded_states.append((st, msg))
+
+        manager.add_state_listener(listener)
+        manager._set_state(OAuthState.AUTHORIZING, "Starting authorization")
+        manager._set_state(OAuthState.CALLBACK_RECEIVED, "Callback hit")
+        manager._set_state(OAuthState.AUTHENTICATED, "All done")
+
+        self.assertEqual(len(recorded_states), 3)
+        self.assertEqual(recorded_states[0][0], OAuthState.AUTHORIZING)
+        self.assertEqual(recorded_states[1][0], OAuthState.CALLBACK_RECEIVED)
+        self.assertEqual(recorded_states[2][0], OAuthState.AUTHENTICATED)
+
+        manager.remove_state_listener(listener)
+        manager._set_state(OAuthState.IDLE)
+        self.assertEqual(len(recorded_states), 3)  # No new event after removal
+
+    def test_callback_handler_ignores_auxiliary_requests(self):
+        """Verify callback handler serves 204 for favicon without terminating."""
+        import http.server
+        import threading
+        import urllib.request
+        from vyntra.services.auth_manager import _OAuthCallbackHandler
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), _OAuthCallbackHandler)
+        server.query_params = {}
+        server.callback_event = threading.Event()
+        port = server.server_address[1]
+
+        def client_favicon():
+            time.sleep(0.05)
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/favicon.ico")
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    pass
+            except Exception:
+                pass
+
+        t = threading.Thread(target=client_favicon)
+        t.start()
+        server.handle_request()
+        t.join()
+
+        # Favicon should NOT set callback event
+        self.assertFalse(server.callback_event.is_set())
+        self.assertEqual(server.query_params, {})
+        server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ Application entry point for Vyntra.
 import sys
 import customtkinter as ctk
 
+from vyntra import __app_name__, __version__
 from vyntra.config import config_manager
 from vyntra.ui.app import VyntraApp
 from vyntra.utils.logger import logger
@@ -12,6 +13,7 @@ from vyntra.utils.logger import logger
 
 def main():
     """Bootstraps and launches the Vyntra desktop application."""
+    logger.info("[Vyntra] Vyntra version %s", __version__)
     logger.info("Initializing Vyntra Application...")
 
     # Configure CustomTkinter Appearance

@@ -1,0 +1,104 @@
+name: Build Multi-Platform Releases (Windows & macOS)
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  # ============================================================================
+  # 1. BUILD WINDOWS STANDALONE EXECUTABLE (.exe)
+  # ============================================================================
+  build-windows:
+    name: Build Windows (.exe)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Generate Application Icons
+        run: |
+          python scripts/generate_icons.py
+
+      - name: Build Standalone Executable with PyInstaller
+        run: |
+          python -m PyInstaller --clean --noconfirm Vyntra.spec
+
+      - name: Package Windows Executable
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/Vyntra.exe -DestinationPath dist/Vyntra-Windows-x64.zip
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vyntra-Windows-x64
+          path: dist/Vyntra-Windows-x64.zip
+          if-no-files-found: error
+
+  # ============================================================================
+  # 2. BUILD MACOS APPLICATION BUNDLE & DMG (.app / .dmg)
+  # ============================================================================
+  build-macos:
+    name: Build macOS (.app & .dmg)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Generate Application Icons (.png, .icns)
+        run: |
+          python3 scripts/generate_icons.py
+
+      - name: Build macOS Application Bundle with PyInstaller
+        run: |
+          python3 -m PyInstaller --clean --noconfirm Vyntra.spec
+
+      - name: Create DMG Disk Image
+        run: |
+          mkdir -p dist/dmg_staging
+          cp -R dist/Vyntra.app dist/dmg_staging/
+          ln -s /Applications dist/dmg_staging/Applications
+          hdiutil create \
+            -volname "Vyntra" \
+            -srcfolder dist/dmg_staging \
+            -ov \
+            -format UDZO \
+            dist/Vyntra-macOS.dmg
+          rm -rf dist/dmg_staging
+
+      - name: Upload macOS DMG Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vyntra-macOS-Apple-Silicon
+          path: dist/Vyntra-macOS.dmg
+          if-no-files-found: error

@@ -31,6 +31,29 @@ from vyntra.utils.filename import sanitize_filename
 from vyntra.utils.logger import logger
 
 
+class StreamPayload(str):
+    """
+    Subclasses str so that string-based assertions, logging, and legacy callers
+    treat it as a standard media URL/path string, while exposing rich stream
+    metadata (separate audio stream URL, HTTP headers, etc.) for high-performance playback.
+    """
+    video_url: str
+    audio_url: str
+    http_headers: Dict[str, str]
+
+    def __new__(
+        cls,
+        video_url: str,
+        audio_url: Optional[str] = None,
+        http_headers: Optional[Dict[str, str]] = None,
+    ):
+        obj = super().__new__(cls, video_url)
+        obj.video_url = video_url
+        obj.audio_url = audio_url or video_url
+        obj.http_headers = http_headers or {}
+        return obj
+
+
 class YouTubeService:
     """Unified YouTube extraction, authentication, format probing, and playback engine."""
 
@@ -128,7 +151,7 @@ class YouTubeService:
             name = Path(cf).name if cf else "cookies.txt"
             return ("Cookie File", f"File: {name}")
         else:
-            return ("Guest", "Anonymous (No session configured)")
+            return ("Smart Guest", "Automatic (visionos/web)")
 
     def is_google_oauth_connected(self) -> bool:
         """Checks if Google Identity OAuth is connected in Vyntra."""
@@ -165,8 +188,18 @@ class YouTubeService:
     # ----------------------------------------------------------------------
 
     def get_player_clients(self) -> List[str]:
-        """Returns the prioritized Innertube player client chain."""
-        return ["tv_embedded", "web_embedded", "android", "ios", "web"]
+        """
+        Returns the prioritized Innertube player client chain.
+        When session cookies are configured, uses yt-dlp's authed client chain:
+        ['web_embedded', 'tv_downgraded', 'web'].
+        When running unauthenticated (guest), uses ['default'], which yt-dlp
+        maps to its native _DEFAULT_CLIENTS ('visionos', 'web') to natively
+        bypass BotGuard without triggering 'confirm you're not a bot' blocks.
+        """
+        auth_mode = getattr(config_manager.config, "youtube_media_auth_mode", "none")
+        if self.is_cookies_available() or auth_mode == "browser":
+            return ["web_embedded", "tv_downgraded", "web"]
+        return ["default"]
 
     def get_base_ydl_options(self, purpose: str = "general") -> Dict[str, Any]:
         """
@@ -262,7 +295,7 @@ class YouTubeService:
         cleaned = raw.replace("ERROR: [youtube]", "").replace("ERROR:", "").strip()
         return cleaned or "An unexpected error occurred while communicating with YouTube."
 
-    def test_youtube_media_access(self, test_video_id: str = "dQw4w9WgXcQ") -> Tuple[bool, str]:
+    def test_youtube_media_access(self, test_video_id: str = "Obvg5jVCvxc") -> Tuple[bool, str]:
         """
         Tests the configured YouTube media extraction pipeline (cookies/browser/guest)
         against YouTube to confirm if yt-dlp can extract formats.
@@ -300,7 +333,7 @@ class YouTubeService:
             elif "Sign in to confirm you’re not a bot" in err_str or "confirm you're not a bot" in err_str:
                 msg = (
                     "YouTube requires sign-in verification. "
-                    "Please select an authenticated browser session in Settings."
+                    "Please select an authenticated browser session in Settings or provide a cookie file."
                 )
                 config_manager.update(youtube_media_status="failed", youtube_media_status_message=msg)
                 return (False, f"⚠️ {msg}")
@@ -335,8 +368,9 @@ class YouTubeService:
         })
 
         provider_name, po_gen, po_att = self.get_po_token_info()
+        media_mode_name, _ = self.get_media_auth_summary()
         logger.info("[YouTube] Probing formats for %s", video_id)
-        logger.info("[YouTube] Authentication method: %s", "Cookie File" if self.is_cookies_available() else "Guest")
+        logger.info("[YouTube] Authentication method: %s", media_mode_name)
         logger.info("[YouTube] Player client: %s", ",".join(self.get_player_clients()))
         logger.info("[YouTube] PO Token provider: %s", provider_name)
 
@@ -392,16 +426,18 @@ class YouTubeService:
             classified_err = self.classify_error(err)
             sanitized_log = str(err).split("\n")[0]
             logger.warning("[YouTube] Format probe failed for %s: %s", video_id, sanitized_log)
+            # Cache failure to prevent repeated retry storms
+            self._resolution_cache[url] = []
             return ([], classified_err)
 
     # ----------------------------------------------------------------------
-    # 7. Diagnostics Mode (Section 9)
+    # 7. Diagnostics Mode (Section 13)
     # ----------------------------------------------------------------------
 
     def diagnose_video(self, video_id_or_url: str) -> str:
         """
         Executes an end-to-end diagnostic trace on a YouTube URL and generates
-        the exact formatted diagnostic report requested in Section 9.
+        the exact formatted diagnostic report requested in Section 13.
         Guarantees zero leakage of cookies, tokens, authorization codes, or passwords.
         """
         url = video_id_or_url if video_id_or_url.startswith("http") else f"https://www.youtube.com/watch?v={video_id_or_url}"
@@ -423,8 +459,8 @@ class YouTubeService:
             format_probe_status = "SUCCESS"
             formats_found_str = f"{len(resolutions)} resolutions ({', '.join(resolutions[:4])}...)"
         else:
-            format_probe_status = "FAILED"
-            formats_found_str = f"FAILED: {probe_err}"
+            format_probe_status = "FAILURE"
+            formats_found_str = f"FAILURE: {probe_err}"
 
         # 2. Test Playback Media Extraction Capability
         ydl_opts_play = self.get_base_ydl_options(purpose="playback")
@@ -438,9 +474,9 @@ class YouTubeService:
                 if info and info.get("formats"):
                     playback_status = "SUCCESS"
                 else:
-                    playback_status = "FAILED (No formats)"
+                    playback_status = "FAILURE (No formats)"
         except Exception as e:
-            playback_status = f"FAILED ({self.classify_error(e)})"
+            playback_status = f"FAILURE ({self.classify_error(e)})"
 
         # 3. Test Download Extraction Capability
         ydl_opts_dl = self.get_base_ydl_options(purpose="download")
@@ -454,38 +490,30 @@ class YouTubeService:
                 if info:
                     download_status = "SUCCESS"
                 else:
-                    download_status = "FAILED (No info)"
+                    download_status = "FAILURE (No info)"
         except Exception as e:
-            download_status = f"FAILED ({self.classify_error(e)})"
+            download_status = f"FAILURE ({self.classify_error(e)})"
 
         media_mode, media_detail = self.get_media_auth_summary()
+        auth_method_label = "COOKIES" if (self.is_cookies_available() or getattr(config_manager.config, "youtube_media_auth_mode", "none") == "browser") else "SMART GUEST"
+        po_provider_label = po_provider if po_gen else "NONE"
 
-        # Format exact output as requested in Section 9
+        # Format exact output as requested in Section 13
         report = (
-            "YouTube Diagnostics\n"
-            "──────────────────────────────\n\n"
-            f"yt-dlp version: {self.ytdlp_version}\n"
-            f"Video ID: {video_id}\n\n"
-            "Authentication:\n"
-            f"  Google OAuth: {oauth_status}\n"
-            f"  Media Session: {media_mode} ({media_detail})\n"
-            f"  yt-dlp cookies: {cookies_status}\n\n"
-            "Player client:\n"
-            f"  {player_clients}\n\n"
-            "PO Token provider:\n"
-            f"  {po_provider}\n\n"
-            "PO Token generated:\n"
-            f"  {'YES' if po_gen else 'NO'}\n\n"
-            "PO Token attached:\n"
-            f"  {'YES' if po_att else 'NO'}\n\n"
-            "Format probe:\n"
-            f"  {format_probe_status}\n\n"
-            "Formats found:\n"
-            f"  {formats_found_str}\n\n"
-            "Playback extraction:\n"
-            f"  {playback_status}\n\n"
-            "Download extraction:\n"
-            f"  {download_status}\n"
+            "Vyntra YouTube Diagnostics\n"
+            "────────────────────────────\n\n"
+            f"yt-dlp version:\n{self.ytdlp_version}\n\n"
+            f"Video:\n{video_id}\n\n"
+            f"Google OAuth:\n{oauth_status}\n\n"
+            f"yt-dlp cookies:\n{cookies_status}\n\n"
+            f"Authentication method:\n{auth_method_label}\n\n"
+            f"Player clients:\n{player_clients}\n\n"
+            f"PO Token provider:\n{po_provider_label}\n\n"
+            f"PO Token generated:\n{'YES' if po_gen else 'NO'}\n\n"
+            f"PO Token attached:\n{'YES' if po_att else 'NO'}\n\n"
+            f"Format probe:\n{format_probe_status}\n\n"
+            f"Playback extraction:\n{playback_status}\n\n"
+            f"Download extraction:\n{download_status}\n"
         )
         return report
 
@@ -496,7 +524,7 @@ class YouTubeService:
     def prepare_playback_stream(
         self,
         result: SearchResult,
-        on_ready: Callable[[str, int], None],
+        on_ready: Callable[[StreamPayload, int], None],
         on_error: Callable[[Exception], None],
     ) -> None:
         """
@@ -514,54 +542,102 @@ class YouTubeService:
             for ext in (".mp4", ".m4v", ".mkv"):
                 exact_path = download_dir / f"{safe_title}{ext}"
                 if exact_path.is_file() and exact_path.stat().st_size > 100000:
-                    on_ready(str(exact_path), result.duration_seconds or 0)
+                    payload = StreamPayload(str(exact_path), str(exact_path), {})
+                    on_ready(payload, result.duration_seconds or 0)
                     return
 
         # Check existing cache
         if cache_file.is_file() and cache_file.stat().st_size > 100000:
-            on_ready(str(cache_file), result.duration_seconds or 0)
+            payload = StreamPayload(str(cache_file), str(cache_file), {})
+            on_ready(payload, result.duration_seconds or 0)
             return
 
         import concurrent.futures
         import threading
 
-        def _extract_stream():
+        def _extract_stream() -> Tuple[StreamPayload, int]:
             url = result.url if (result.url and result.url.startswith("http")) else f"https://www.youtube.com/watch?v={result.video_id}"
             ydl_opts = self.get_base_ydl_options(purpose="playback")
             ydl_opts.update({
-                "format": "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
-                "retries": 2,
-                "socket_timeout": 10,
+                "skip_download": True,
+                "retries": 3,
+                "socket_timeout": 15,
             })
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if not info:
                     raise RuntimeError("No stream metadata extracted.")
 
-                stream_url = info.get("url")
-                if not stream_url and "formats" in info:
-                    prog_formats = [
-                        f for f in info["formats"]
-                        if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url")
-                    ]
-                    if prog_formats:
-                        stream_url = prog_formats[-1]["url"]
-                    elif info["formats"]:
-                        stream_url = info["formats"][-1].get("url")
+                formats = info.get("formats", [])
+                headers = dict(info.get("http_headers") or {})
+                duration = int(info.get("duration") or result.duration_seconds or 0)
 
-                if not stream_url:
+                # 1. Check for combined progressive format (rare in modern YouTube)
+                prog_formats = [
+                    f for f in formats
+                    if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url")
+                ]
+
+                # 2. Select best video stream <= 720p (for fast smooth playback)
+                v_stream = None
+                best_h = 0
+                for f in formats:
+                    if f.get("vcodec") != "none" and f.get("url"):
+                        h = f.get("height") or 0
+                        if 0 < h <= 720 and h >= best_h:
+                            best_h = h
+                            v_stream = f
+                if not v_stream:
+                    video_only = [f for f in formats if f.get("vcodec") != "none" and f.get("url")]
+                    if video_only:
+                        v_stream = video_only[0]
+
+                # 3. Select best audio stream (m4a preferred for compatibility)
+                a_stream = None
+                for f in formats:
+                    if f.get("acodec") != "none" and f.get("vcodec") == "none" and f.get("url"):
+                        if f.get("ext") == "m4a":
+                            a_stream = f
+                            break
+                        elif not a_stream:
+                            a_stream = f
+
+                # Determine final video_url, audio_url, and headers
+                stream_headers = dict(headers)
+                if v_stream and a_stream:
+                    v_url = v_stream["url"]
+                    a_url = a_stream["url"]
+                    if v_stream.get("http_headers"):
+                        stream_headers.update(v_stream["http_headers"])
+                elif prog_formats:
+                    chosen = prog_formats[-1]
+                    v_url = chosen["url"]
+                    a_url = chosen["url"]
+                    if chosen.get("http_headers"):
+                        stream_headers.update(chosen["http_headers"])
+                elif info.get("url"):
+                    v_url = info["url"]
+                    a_url = info["url"]
+                elif formats:
+                    v_url = formats[-1].get("url") or ""
+                    a_url = formats[0].get("url") or v_url
+                else:
                     raise RuntimeError("No playable stream URL found.")
 
-                duration = int(info.get("duration") or result.duration_seconds or 0)
-                return stream_url, duration
+                payload = StreamPayload(
+                    video_url=v_url,
+                    audio_url=a_url,
+                    http_headers=stream_headers,
+                )
+                return payload, duration
 
         def _worker():
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             try:
                 future = executor.submit(_extract_stream)
                 try:
-                    stream_url, duration = future.result(timeout=20.0)
-                    on_ready(stream_url, duration)
+                    payload, duration = future.result(timeout=20.0)
+                    on_ready(payload, duration)
                 except concurrent.futures.TimeoutError:
                     raise TimeoutError("Stream preparation timed out after 20 seconds.")
             except Exception as err:

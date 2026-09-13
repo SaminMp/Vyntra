@@ -15,6 +15,9 @@ from vyntra.utils.logger import logger
 class AuthService:
     """Facade for managing YouTube authentication across Vyntra UI and backend services."""
 
+    def __init__(self):
+        self._listener_map = {}
+
     def launch_google_signin(self, on_complete: Callable[[bool, str], None]) -> None:
         """
         Launches official Google OAuth 2.0 sign-in via system browser and local loopback server.
@@ -28,6 +31,20 @@ class AuthService:
                 on_complete(False, msg)
 
         auth_manager.start_login(_on_oauth_done)
+
+    def add_auth_listener(self, listener: Callable[[], None]) -> None:
+        """Registers a listener that is notified whenever authentication state changes."""
+        if listener not in self._listener_map:
+            def _wrapper(state, message):
+                listener()
+            self._listener_map[listener] = _wrapper
+            auth_manager.add_state_listener(_wrapper)
+
+    def remove_auth_listener(self, listener: Callable[[], None]) -> None:
+        """Unregisters an authentication state listener."""
+        wrapper = self._listener_map.pop(listener, None)
+        if wrapper:
+            auth_manager.remove_state_listener(wrapper)
 
     def disconnect(self) -> None:
         """Logs out and deletes credentials from OS Keyring."""
@@ -44,20 +61,20 @@ class AuthService:
             user_label = email or name or "Connected"
             return (
                 "connected",
-                f"● YouTube: {user_label}",
-                f"Connected with verified Google / YouTube session for {user_label}",
+                f"● Google: {user_label}",
+                f"Signed in as {user_label} (Google Identity & Playlists)",
             )
         elif config_manager.config.auth_status == "expired":
             return (
                 "expired",
-                "⚠️ YouTube: Session Expired",
+                "⚠️ Google: Session Expired",
                 "Google authentication expired. Please reconnect your account.",
             )
         else:
             return (
                 "disconnected",
-                "○ YouTube: Guest",
-                "Not signed in to Google / YouTube (Guest mode)",
+                "○ Google: Guest",
+                "Not signed in to Google (Guest mode)",
             )
 
     def get_media_access_status(self) -> Tuple[str, str, str]:

@@ -12,13 +12,7 @@ from typing import Callable, Optional
 import customtkinter as ctk
 from PIL import Image
 
-try:
-    from ffpyplayer.player import MediaPlayer
-except ImportError:
-    MediaPlayer = None
-
-if MediaPlayer is None:
-    from vyntra.services.media_player import FFmpegMediaPlayer as MediaPlayer
+from vyntra.services.media_player import SynchronizedMediaPlayer as MediaPlayer
 
 from vyntra.models import SearchResult
 from vyntra.services.stream_service import stream_server, stream_service, stream_state
@@ -371,10 +365,12 @@ class VideoPlayerModal(ctk.CTkToplevel):
             ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(target_w, target_h))
             self.video_label.configure(image=ctk_img)
 
-            # Update seek position
-            if not self._is_seeking and pts is not None:
-                self.seek_slider.set(float(pts))
-                self.time_label.configure(text=f"{format_duration(int(pts))} / {format_duration(self._duration)}")
+        # Update seek position and timeline using authoritative master PTS
+        if not self._is_seeking and self._player:
+            curr_pts = self._player.get_pts()
+            if curr_pts is not None:
+                self.seek_slider.set(float(curr_pts))
+                self.time_label.configure(text=f"{format_duration(int(curr_pts))} / {format_duration(self._duration)}")
 
         if val == "eof":
             logger.info("[Player] Reached end of video stream.")

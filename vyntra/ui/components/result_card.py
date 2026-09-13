@@ -40,8 +40,11 @@ class ResultCard(ctk.CTkFrame):
         self.on_preview = on_preview
         self.on_watch_later_changed = on_watch_later_changed
         self._is_selected = False
+        self._is_compact_layout: Optional[bool] = None
 
+        self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(2, weight=0)
         self.grid_rowconfigure(0, weight=1)
 
         # 1. Thumbnail Container (Left)
@@ -84,7 +87,7 @@ class ResultCard(ctk.CTkFrame):
             text_color=Theme.TEXT_PRIMARY,
             anchor="w",
             justify="left",
-            wraplength=420,
+            wraplength=380,
         )
         self.title_label.grid(row=0, column=0, sticky="nw", pady=(0, 4))
 
@@ -115,7 +118,7 @@ class ResultCard(ctk.CTkFrame):
         )
         self.meta_label.grid(row=2, column=0, sticky="w")
 
-        # 3. Action Buttons (Right: Preview & Select)
+        # 3. Action Buttons (Preview, Watch Later, Select)
         self.action_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.action_frame.grid(row=0, column=2, padx=(6, 14), pady=10, sticky="e")
 
@@ -173,8 +176,39 @@ class ResultCard(ctk.CTkFrame):
             self.thumb_label,
         ])
 
+        # Bind configure event for dynamic responsiveness
+        self.bind("<Configure>", self._on_configure)
+
         # Load Thumbnail asynchronously
         self._load_thumbnail()
+
+    def _on_configure(self, event):
+        """Dynamically adjusts text wraplength and action buttons placement."""
+        width = event.width
+        if width <= 1:
+            return
+
+        is_compact = width < 660
+        if is_compact != self._is_compact_layout:
+            self._is_compact_layout = is_compact
+            self._apply_responsive_layout(is_compact)
+
+        # Calculate ideal title wraplength based on available space
+        avail_w = max(180, width - 170 - (280 if not is_compact else 20))
+        if hasattr(self, "title_label") and self.title_label.winfo_exists():
+            self.title_label.configure(wraplength=avail_w)
+
+    def _apply_responsive_layout(self, is_compact: bool):
+        if is_compact:
+            # Move action buttons below metadata in info_frame
+            self.action_frame.grid_remove()
+            self.action_frame.grid(row=3, column=0, sticky="w", pady=(8, 0))
+            self.grid_columnconfigure(2, weight=0)
+        else:
+            # Restore action buttons to right side in card frame
+            self.action_frame.grid_remove()
+            self.action_frame.grid(row=0, column=2, padx=(6, 14), pady=10, sticky="e")
+            self.grid_columnconfigure(2, weight=0)
 
     def _bind_events(self, widgets):
         for w in widgets:

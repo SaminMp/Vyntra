@@ -89,8 +89,13 @@ class DownloadService:
             return task_id in self._active_tasks
 
     def build_ydl_options(self, task: DownloadTask, out_base_without_ext: str) -> dict:
-        """Builds yt-dlp option dictionary configured for format, quality, metadata and cookies via YouTubeService."""
-        return youtube_service.build_download_options(task, out_base_without_ext)
+        """Builds yt-dlp option dictionary configured for format, quality, and metadata via platform service."""
+        try:
+            from vyntra.platforms.registry import platform_registry
+            platform_svc = platform_registry.get(getattr(task, "platform", "youtube"))
+            return platform_svc.build_download_options(task, out_base_without_ext)
+        except Exception:
+            return youtube_service.build_download_options(task, out_base_without_ext)
 
     def _execute_download(
         self,
@@ -99,9 +104,10 @@ class DownloadService:
     ) -> str:
         """Synchronous core download execution using yt-dlp."""
         task.status = DownloadStatus.CONNECTING
+        platform_name = str(getattr(task, "platform", "YouTube")).capitalize()
         progress_info = ProgressInfo(
             status=DownloadStatus.CONNECTING,
-            status_message="Connecting to YouTube...",
+            status_message=f"Connecting to {platform_name}...",
             filename=task.result.display_title,
         )
         on_progress(progress_info)

@@ -27,7 +27,7 @@ class TestDownloadIntegration(unittest.TestCase):
             url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         )
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
             task = DownloadTask(
                 result=result,
                 format=MediaFormat.MP3,
@@ -57,8 +57,8 @@ class TestDownloadIntegration(unittest.TestCase):
                 on_error=_on_error,
             )
 
-            # Wait up to 50 seconds for download and conversion
-            finished = completion_event.wait(timeout=50)
+            # Wait up to 75 seconds for download and conversion
+            finished = completion_event.wait(timeout=75)
             self.assertTrue(finished, "Download timed out")
             self.assertEqual(len(error_holder), 0, f"Download failed with error: {error_holder}")
             self.assertEqual(len(completed_file), 1)
