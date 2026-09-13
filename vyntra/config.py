@@ -53,6 +53,7 @@ class AppConfig:
     auth_connected: bool = False
     auth_status: str = "disconnected"   # "connected", "disconnected", "expired"
     setup_completed: bool = False
+    donation_prompt_dismissed: bool = False
 
     # YouTube Media Access Authentication (cleanly separated from Google OAuth Identity)
     youtube_media_auth_mode: str = "none"   # "none", "browser", "cookie_file"

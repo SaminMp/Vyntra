@@ -15,6 +15,7 @@ from vyntra.models import MediaFormat
 from vyntra.services.auth_service import auth_service
 from vyntra.services.ffmpeg_service import ffmpeg_service
 from vyntra.ui.theme import Theme
+from vyntra.ui.views.donation_modal import DonationModal
 from vyntra.ui.views.update_modal import UpdateModal
 from vyntra.updater.manager import update_manager
 
@@ -32,8 +33,8 @@ class SettingsModal(ctk.CTkToplevel):
         self.configure(fg_color=Theme.BG_MAIN)
 
         try:
-            self.transient(master)
             if master and master.winfo_ismapped():
+                self.transient(master)
                 self.grab_set()
         except Exception:
             pass
@@ -65,6 +66,7 @@ class SettingsModal(ctk.CTkToplevel):
         self._build_general_settings()
         self._build_account_settings()
         self._build_updates_section()
+        self._build_donation_section()
         self._build_about_section()
         self._build_action_buttons()
 
@@ -337,7 +339,74 @@ class SettingsModal(ctk.CTkToplevel):
         self._next_row = row + 2
 
     # -------------------------------------------------------------------------
-    # 4. About Vyntra
+    # 4. Donation & Support
+    # -------------------------------------------------------------------------
+    def _build_donation_section(self):
+        """Support Vyntra development and prompt preferences."""
+        row = self._next_row
+
+        divider = ctk.CTkFrame(self.scroll_frame, height=1, fg_color=Theme.BORDER_CARD)
+        divider.grid(row=row, column=0, columnspan=2, padx=16, pady=10, sticky="ew")
+        row += 1
+
+        sec_label = ctk.CTkLabel(
+            self.scroll_frame,
+            text="💖 Support Vyntra",
+            font=Theme.FONT_HEADER,
+            text_color=Theme.TEXT_ACCENT,
+        )
+        sec_label.grid(row=row, column=0, columnspan=2, padx=16, pady=(12, 6), sticky="w")
+        row += 1
+
+        info_box = ctk.CTkFrame(self.scroll_frame, fg_color=Theme.BG_INPUT, corner_radius=6)
+        info_box.grid(row=row, column=0, columnspan=2, padx=16, pady=(0, 10), sticky="ew")
+        info_box.grid_columnconfigure(0, weight=1)
+
+        desc_lbl = ctk.CTkLabel(
+            info_box,
+            text="Vyntra is free and open-source. Consider supporting development with a USDT contribution.",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_MUTED,
+            justify="left",
+        )
+        desc_lbl.grid(row=0, column=0, padx=12, pady=(10, 8), sticky="w")
+
+        btn_bar = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        btn_bar.grid(row=row + 1, column=0, columnspan=2, padx=16, pady=(0, 12), sticky="ew")
+
+        self.donate_btn = ctk.CTkButton(
+            btn_bar,
+            text="Support with USDT",
+            font=(Theme.FONT_FAMILY, 11, "bold"),
+            height=30,
+            width=160,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.PRIMARY,
+            hover_color=Theme.PRIMARY_HOVER,
+            command=self._on_donate_clicked,
+        )
+        self.donate_btn.pack(side="left", padx=(0, 14))
+
+        self.donation_prompt_var = ctk.BooleanVar(value=not config_manager.config.donation_prompt_dismissed)
+        self.donation_prompt_chk = ctk.CTkCheckBox(
+            btn_bar,
+            text="Show prompt after downloads",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_SECONDARY,
+            variable=self.donation_prompt_var,
+            checkbox_width=18,
+            checkbox_height=18,
+            corner_radius=4,
+        )
+        self.donation_prompt_chk.pack(side="left")
+
+        self._next_row = row + 2
+
+    def _on_donate_clicked(self):
+        DonationModal(self)
+
+    # -------------------------------------------------------------------------
+    # 5. About Vyntra
     # -------------------------------------------------------------------------
     def _build_about_section(self):
         """Information about Vyntra and system dependencies."""
@@ -532,7 +601,8 @@ class SettingsModal(ctk.CTkToplevel):
                 if res in q_str.lower():
                     v_val = res
                     break
-            update_kwargs["video_quality"] = v_val
+        if hasattr(self, "donation_prompt_var"):
+            update_kwargs["donation_prompt_dismissed"] = not bool(self.donation_prompt_var.get())
 
         config_manager.update(**update_kwargs)
 

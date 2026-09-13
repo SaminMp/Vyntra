@@ -28,6 +28,7 @@ from vyntra.ui.components.status_banner import StatusBanner
 from vyntra.ui.pages import BasePlatformPage, InstagramPage, SpotifyPage, TikTokPage, YouTubePage
 from vyntra.ui.theme import Theme
 from vyntra.ui.views.account_modal import AccountModal
+from vyntra.ui.views.donation_modal import DonationModal
 from vyntra.ui.views.player_modal import VideoPlayerModal
 from vyntra.ui.views.settings_modal import SettingsModal
 from vyntra.ui.views.setup_wizard import SetupWizard
@@ -98,6 +99,8 @@ class VyntraApp(ctk.CTk):
 
         self._active_task_id: Optional[str] = None
         self._player_modal: Optional[VideoPlayerModal] = None
+        self._donation_modal: Optional[DonationModal] = None
+        self._donation_shown_this_session: bool = False
         self._is_watch_later_active: bool = False
 
         # Layout Configuration: row 2 (pages) expands; header, nav, and terminal stay fixed
@@ -134,6 +137,8 @@ class VyntraApp(ctk.CTk):
         # First run: Show Setup Wizard if not completed
         if not config_manager.config.setup_completed:
             self._setup_wizard_after_id = self._safe_after(250, self._open_setup_wizard)
+        elif not config_manager.config.donation_prompt_dismissed:
+            self._donation_prompt_after_id = self._safe_after(3000, lambda: self._maybe_prompt_donation(trigger="launch"))
 
     def _safe_after(self, delay_ms: int, callback: Callable) -> Optional[str]:
         """Schedules a callback via after() while tracking ID for cancellation and verifying alive state."""
@@ -300,7 +305,18 @@ class VyntraApp(ctk.CTk):
             hover_color=Theme.BG_CARD_HOVER,
             command=self._open_downloads_folder,
         )
-        open_dir_btn.pack(side="left", padx=(0, 8))
+        self.support_btn = ctk.CTkButton(
+            actions_box,
+            text="💖 Support",
+            font=Theme.FONT_CAPTION,
+            width=84,
+            height=30,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_CARD,
+            hover_color=Theme.BG_CARD_HOVER,
+            command=self._open_donation_modal,
+        )
+        self.support_btn.pack(side="left", padx=(0, 8))
 
         settings_btn = ctk.CTkButton(
             actions_box,
@@ -494,6 +510,34 @@ class VyntraApp(ctk.CTk):
         if self._pending_update and self._pending_update.has_update:
             UpdateModal(self, check_result=self._pending_update)
 
+    def _open_donation_modal(self, force: bool = True):
+        """Opens the USDT donation modal."""
+        if self._donation_modal and self._donation_modal.winfo_exists():
+            try:
+                self._donation_modal.lift()
+                self._donation_modal.focus_force()
+            except Exception:
+                pass
+            return
+
+        self._donation_modal = DonationModal(self)
+        if force:
+            self._donation_shown_this_session = True
+
+    def _maybe_prompt_donation(self, trigger: str = "download"):
+        """Prompts for donation if not dismissed and not yet shown this session."""
+        if self._is_disposed:
+            return
+        if config_manager.config.donation_prompt_dismissed:
+            return
+        if self._donation_shown_this_session:
+            return
+        if self._donation_modal and self._donation_modal.winfo_exists():
+            return
+
+        self._donation_shown_this_session = True
+        self._open_donation_modal(force=False)
+
     def _handle_start_download(
         self,
         result: MediaItem,
@@ -564,6 +608,9 @@ class VyntraApp(ctk.CTk):
             action_text="Open Folder",
             on_action=lambda: self._open_file_location(output_path, fallback_dir=task.save_directory),
         )
+
+        # Trigger polite donation prompt if appropriate
+        self._safe_after(800, lambda: self._maybe_prompt_donation(trigger="download"))
 
     def _download_failed(self, task: DownloadTask, err: Exception):
         page = self._pages.get(task.platform)
@@ -726,13 +773,20 @@ class VyntraApp(ctk.CTk):
             except Exception:
                 pass
 
-        # 6. Dispose player modal if open
+        # 6. Dispose player and donation modals if open
         if getattr(self, "_player_modal", None):
             try:
                 self._player_modal.destroy()
             except Exception:
                 pass
             self._player_modal = None
+
+        if getattr(self, "_donation_modal", None):
+            try:
+                self._donation_modal.destroy()
+            except Exception:
+                pass
+            self._donation_modal = None
 
         # 7. Clear CustomTkinter tracker references for this window
         try:
