@@ -198,7 +198,8 @@ class UpdateModal(ctk.CTkToplevel):
                     text_color=Theme.TEXT_PRIMARY,
                 )
 
-        self.after(0, update)
+        if self.winfo_exists():
+            self.after(0, lambda: update() if self.winfo_exists() else None)
 
     def _on_download_error(self, err_msg: str):
         """Thread-safe UI update on download or verification error."""
@@ -212,4 +213,19 @@ class UpdateModal(ctk.CTkToplevel):
             self.update_btn.configure(state="normal", text="Retry Update")
             self.later_btn.configure(state="normal", text="Close")
 
-        self.after(0, show_err)
+        if self.winfo_exists():
+            self.after(0, lambda: show_err() if self.winfo_exists() else None)
+
+    def destroy(self):
+        try:
+            for aid in self.tk.splitlist(self.tk.eval("after info")):
+                try:
+                    self.tk.eval(f"after cancel {aid}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            super().destroy()
+        except Exception:
+            pass

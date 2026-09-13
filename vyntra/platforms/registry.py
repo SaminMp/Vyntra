@@ -62,6 +62,14 @@ class PlatformRegistry:
                 return platform
         return None
 
+    def shutdown_all(self, wait: bool = True, cancel_futures: bool = True) -> None:
+        """Shuts down executors across all registered platform services."""
+        for platform in self._platforms.values():
+            try:
+                platform.shutdown(wait=wait, cancel_futures=cancel_futures)
+            except Exception as err:
+                logger.debug("[Registry] Error shutting down platform %s: %s", platform.platform_id, err)
+
 
 # Global singleton registry
 platform_registry = PlatformRegistry()

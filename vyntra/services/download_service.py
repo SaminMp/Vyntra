@@ -30,9 +30,36 @@ class DownloadService:
     """Orchestrates YouTube media downloads, transcoding, and status tracking."""
 
     def __init__(self, max_concurrent: int = 3):
-        self._executor = ThreadPoolExecutor(max_workers=max_concurrent, thread_name_prefix="DownloadWorker")
+        self._max_concurrent = max_concurrent
+        self._executor: Optional[ThreadPoolExecutor] = None
         self._active_tasks: Dict[str, DownloadTask] = {}
         self._lock = threading.Lock()
+        self._ensure_executor()
+
+    def _ensure_executor(self):
+        with self._lock:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=self._max_concurrent, thread_name_prefix="DownloadWorker")
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = True) -> None:
+        """Shuts down background download workers cleanly."""
+        executor = None
+        with self._lock:
+            executor = self._executor
+            self._executor = None
+
+        if executor is not None:
+            try:
+                executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+            except TypeError:
+                executor.shutdown(wait=wait)
+
+    def reset(self) -> None:
+        """Resets download service state and worker pool."""
+        self.shutdown(wait=True)
+        with self._lock:
+            self._active_tasks.clear()
+        self._ensure_executor()
 
     def start_download(
         self,
@@ -44,6 +71,7 @@ class DownloadService:
         """
         Starts downloading a task on a background worker thread.
         """
+        self._ensure_executor()
         with self._lock:
             self._active_tasks[task.task_id] = task
 

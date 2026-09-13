@@ -156,12 +156,20 @@ class AccountModal(ctk.CTkToplevel):
                 auth_service.remove_auth_listener(self._auth_listener)
         except Exception:
             pass
+        try:
+            for aid in self.tk.splitlist(self.tk.eval("after info")):
+                try:
+                    self.tk.eval(f"after cancel {aid}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
         super().destroy()
 
     def _on_external_auth_changed(self):
         try:
             if self.winfo_exists():
-                self.after(0, self._refresh_ui)
+                self.after(0, lambda: self._refresh_ui() if self.winfo_exists() else None)
         except Exception:
             pass
 
@@ -185,7 +193,8 @@ class AccountModal(ctk.CTkToplevel):
         self.status_msg.configure(text="Complete sign-in in your browser...", text_color=Theme.TEXT_MUTED)
 
         def _on_done(success: bool, msg: str):
-            self.after(0, lambda: self._on_signin_finished(success, msg))
+            if self.winfo_exists():
+                self.after(0, lambda: self._on_signin_finished(success, msg) if self.winfo_exists() else None)
 
         auth_service.launch_google_signin(_on_done)
 
@@ -231,7 +240,8 @@ class AccountModal(ctk.CTkToplevel):
 
         def _worker():
             success, msg = auth_service.test_connection()
-            self.after(0, lambda: self._on_test_finished(success, msg))
+            if self.winfo_exists():
+                self.after(0, lambda: self._on_test_finished(success, msg) if self.winfo_exists() else None)
 
         import threading
         threading.Thread(target=_worker, daemon=True).start()

@@ -468,7 +468,8 @@ class SettingsModal(ctk.CTkToplevel):
                         text_color=Theme.TEXT_MUTED,
                     )
                     self.install_update_btn.pack_forget()
-            self.after(0, update)
+            if self.winfo_exists():
+                self.after(0, lambda: update() if self.winfo_exists() else None)
 
         update_manager.check_for_updates(callback=_on_done, background=False)
 
@@ -539,3 +540,17 @@ class SettingsModal(ctk.CTkToplevel):
             self.on_saved()
 
         self.destroy()
+
+    def destroy(self):
+        try:
+            for aid in self.tk.splitlist(self.tk.eval("after info")):
+                try:
+                    self.tk.eval(f"after cancel {aid}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            super().destroy()
+        except Exception:
+            pass

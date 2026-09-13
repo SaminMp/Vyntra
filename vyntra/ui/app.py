@@ -45,6 +45,10 @@ class _TerminalLogBridge(logging.Handler):
 
     def emit(self, record):
         try:
+            if not self.terminal or not hasattr(self.terminal, "winfo_exists"):
+                return
+            if not self.terminal.winfo_exists():
+                return
             msg = record.getMessage()
             lvl = record.levelname.lower()
             # Filter internal high-frequency or noisy background probes
@@ -59,8 +63,15 @@ class _TerminalLogBridge(logging.Handler):
             )
             if any(pattern in msg for pattern in skip_patterns):
                 return
-            if hasattr(self.terminal, "after"):
-                self.terminal.after(0, lambda m=msg, l=lvl: self.terminal.log(m, level=l))
+            if hasattr(self.terminal, "after") and self.terminal.winfo_exists():
+                self.terminal.after(0, lambda m=msg, l=lvl: self._safe_log(m, l))
+        except Exception:
+            pass
+
+    def _safe_log(self, msg, lvl):
+        try:
+            if self.terminal and hasattr(self.terminal, "winfo_exists") and self.terminal.winfo_exists():
+                self.terminal.log(msg, level=lvl)
         except Exception:
             pass
 
@@ -70,6 +81,10 @@ class VyntraApp(ctk.CTk):
 
     def __init__(self):
         super().__init__()
+
+        # Lifecycle Tracking
+        self._tracked_after_ids = set()
+        self._is_disposed = False
 
         # Window Setup
         self._current_platform = "youtube"
@@ -102,7 +117,7 @@ class VyntraApp(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_app_close)
 
         # Subscribe to authentication changes so header badge updates immediately
-        self._auth_listener = lambda: self.after(0, self._update_auth_badge)
+        self._auth_listener = lambda: self._safe_after(0, self._update_auth_badge)
         auth_service.add_auth_listener(self._auth_listener)
 
         # Check FFmpeg on launch and show subtle log in terminal
@@ -110,13 +125,39 @@ class VyntraApp(ctk.CTk):
 
         # Background update check on launch
         self._pending_update: Optional[UpdateCheckResult] = None
-        self._update_listener = lambda res: self.after(0, lambda r=res: self._handle_update_result(r))
+        self._update_listener = lambda res: self._safe_after(0, lambda r=res: self._handle_update_result(r))
         update_manager.add_listener(self._update_listener)
-        self.after(1000, lambda: update_manager.check_for_updates(background=True))
+        self._update_check_after_id = self._safe_after(1000, lambda: update_manager.check_for_updates(background=True))
 
         # First run: Show Setup Wizard if not completed
         if not config_manager.config.setup_completed:
-            self.after(250, self._open_setup_wizard)
+            self._setup_wizard_after_id = self._safe_after(250, self._open_setup_wizard)
+
+    def _safe_after(self, delay_ms: int, callback: Callable) -> Optional[str]:
+        """Schedules a callback via after() while tracking ID for cancellation and verifying alive state."""
+        if self._is_disposed:
+            return None
+        try:
+            aid = None
+            def _wrapper(*args, **kwargs):
+                if self._is_disposed:
+                    return
+                try:
+                    if aid in self._tracked_after_ids:
+                        self._tracked_after_ids.remove(aid)
+                except Exception:
+                    pass
+                try:
+                    if self.winfo_exists():
+                        callback(*args, **kwargs)
+                except Exception:
+                    pass
+
+            aid = self.after(delay_ms, _wrapper)
+            self._tracked_after_ids.add(aid)
+            return aid
+        except Exception:
+            return None
 
     # -------------------------------------------------------------------------
     # Backward Compatibility Properties for Existing Code & Tests
@@ -627,12 +668,100 @@ class VyntraApp(ctk.CTk):
         if self._pending_update and self._pending_update.has_update:
             UpdateModal(self, check_result=self._pending_update)
 
-    def _on_app_close(self):
-        """Clean shutdown of all platform pages, background tasks, and application."""
-        for page in getattr(self, "_pages", {}).values():
+    def dispose(self):
+        """Clean disposal of all listeners, callbacks, pages, and bridge handlers."""
+        if self._is_disposed:
+            return
+        self._is_disposed = True
+
+        # 1. Unhook logging bridge from root logger
+        if hasattr(self, "_log_bridge") and self._log_bridge:
             try:
-                page.deactivate()
+                logger.removeHandler(self._log_bridge)
             except Exception:
                 pass
+            self._log_bridge = None
+
+        # 2. Unhook authentication and update listeners
+        if hasattr(self, "_auth_listener") and self._auth_listener:
+            try:
+                auth_service.remove_auth_listener(self._auth_listener)
+            except Exception:
+                pass
+            self._auth_listener = None
+
+        if hasattr(self, "_update_listener") and self._update_listener:
+            try:
+                update_manager.remove_listener(self._update_listener)
+            except Exception:
+                pass
+            self._update_listener = None
+
+        # 3. Cancel tracked after IDs
+        for aid in list(getattr(self, "_tracked_after_ids", set())):
+            try:
+                self.after_cancel(aid)
+            except Exception:
+                pass
+        self._tracked_after_ids.clear()
+
+        # 4. Cancel all pending after timers in Tk interpreter for this widget
+        try:
+            pending = self.tk.splitlist(self.tk.eval("after info"))
+            for aid in pending:
+                try:
+                    self.tk.eval(f"after cancel {aid}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 5. Deactivate and dispose all pages
+        for page in list(getattr(self, "_pages", {}).values()):
+            try:
+                if hasattr(page, "deactivate"):
+                    page.deactivate()
+            except Exception:
+                pass
+
+        # 6. Dispose player modal if open
+        if getattr(self, "_player_modal", None):
+            try:
+                self._player_modal.destroy()
+            except Exception:
+                pass
+            self._player_modal = None
+
+        # 7. Clear CustomTkinter tracker references for this window
+        try:
+            from customtkinter.windows.widgets.appearance_mode import AppearanceModeTracker
+            if self in AppearanceModeTracker.app_list:
+                AppearanceModeTracker.app_list.remove(self)
+        except Exception:
+            pass
+
+        try:
+            from customtkinter.windows.widgets.scaling import ScalingTracker
+            ScalingTracker.remove_window(None, self)
+            if self in ScalingTracker.window_widgets_dict:
+                del ScalingTracker.window_widgets_dict[self]
+            if self in ScalingTracker.window_dpi_scaling_dict:
+                del ScalingTracker.window_dpi_scaling_dict[self]
+        except Exception:
+            pass
+
+    def destroy(self):
+        """Overrides Tk destroy to guarantee clean resource disposal."""
+        try:
+            self.dispose()
+        except Exception:
+            pass
+        try:
+            super().destroy()
+        except Exception:
+            pass
+
+    def _on_app_close(self):
+        """Clean shutdown of all platform pages, background tasks, and application."""
         self.destroy()
 

@@ -22,9 +22,9 @@ from vyntra.ui.components.search_bar import SearchBar
 class TestResponsiveLayout(unittest.TestCase):
     """Verifies responsive layout constraints, breakpoints, and dynamic adaptation."""
 
-    def test_version_bumped_to_1_1_3(self):
+    def test_version_bumped_to_1_1_4(self):
         """Verifies centralized patch version bump."""
-        self.assertEqual(__version__, "1.1.3")
+        self.assertEqual(__version__, "1.1.4")
 
     def test_platform_selector_layout_transitions(self):
         """Verifies PlatformSelector transitions seamlessly between Wide, Medium, and Compact modes."""

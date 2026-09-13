@@ -30,8 +30,16 @@ class TestServerUpdateService(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
+        try:
+            cls.server.shutdown()
+            cls.server.server_close()
+        except Exception:
+            pass
+        if hasattr(cls, "server_thread") and cls.server_thread:
+            try:
+                cls.server_thread.join(timeout=2.0)
+            except Exception:
+                pass
 
     def test_health_check(self):
         url = f"{self.base_url}/health"

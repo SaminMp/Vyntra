@@ -286,3 +286,22 @@ class FooterTerminal(ctk.CTkFrame):
                 self._action_callback()
             except Exception as e:
                 self.log(f"Action execution error: {e}", level="error")
+
+    def destroy(self):
+        """Cleanly destroys the footer terminal, cancelling any textbox after timers."""
+        try:
+            if hasattr(self, "textbox") and self.textbox:
+                try:
+                    for aid in self.textbox.tk.splitlist(self.textbox.tk.eval("after info")):
+                        try:
+                            self.textbox.tk.eval(f"after cancel {aid}")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            super().destroy()
+        except Exception:
+            pass

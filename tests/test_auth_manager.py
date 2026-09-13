@@ -154,10 +154,10 @@ class TestYouTubeAuthManager(unittest.TestCase):
             except Exception:
                 pass
 
-        t = threading.Thread(target=client_favicon)
+        t = threading.Thread(target=client_favicon, daemon=True)
         t.start()
         server.handle_request()
-        t.join()
+        t.join(timeout=2.0)
 
         # Favicon should NOT set callback event
         self.assertFalse(server.callback_event.is_set())

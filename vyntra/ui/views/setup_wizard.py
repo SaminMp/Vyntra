@@ -391,3 +391,17 @@ class SetupWizard(ctk.CTkToplevel):
         if self.on_completed:
             self.on_completed()
         self.destroy()
+
+    def destroy(self):
+        try:
+            for aid in self.tk.splitlist(self.tk.eval("after info")):
+                try:
+                    self.tk.eval(f"after cancel {aid}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            super().destroy()
+        except Exception:
+            pass

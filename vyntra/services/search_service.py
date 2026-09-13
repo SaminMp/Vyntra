@@ -20,11 +20,40 @@ YOUTUBE_URL_PATTERNS = [
 ]
 
 
+import threading
+
+
 class SearchService:
     """Provides fast searching and metadata extraction from YouTube."""
 
     def __init__(self, max_workers: int = 2):
-        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="SearchWorker")
+        self._max_workers = max_workers
+        self._executor: Optional[ThreadPoolExecutor] = None
+        self._lock = threading.Lock()
+        self._ensure_executor()
+
+    def _ensure_executor(self):
+        with self._lock:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="SearchWorker")
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = True) -> None:
+        """Shuts down background search workers cleanly."""
+        executor = None
+        with self._lock:
+            executor = self._executor
+            self._executor = None
+
+        if executor is not None:
+            try:
+                executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+            except TypeError:
+                executor.shutdown(wait=wait)
+
+    def reset(self) -> None:
+        """Resets search service worker pool."""
+        self.shutdown(wait=True)
+        self._ensure_executor()
 
     def is_youtube_url(self, query: str) -> bool:
         """Checks whether the query is a direct YouTube video or shorts URL."""
@@ -182,7 +211,9 @@ class SearchService:
             except TypeError:
                 on_result(resolutions)
 
-        self._executor.submit(_worker)
+        self._ensure_executor()
+        if self._executor is not None:
+            self._executor.submit(_worker)
 
 
 # Global singleton instance

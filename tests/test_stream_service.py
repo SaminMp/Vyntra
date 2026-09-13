@@ -28,16 +28,17 @@ class TestStreamService(unittest.TestCase):
     def test_server_lifecycle_and_http_response(self):
         """Verify local stream server starts, responds on localhost, and stops cleanly."""
         port = stream_server.start()
-        self.assertGreater(port, 1024)
+        try:
+            self.assertGreater(port, 1024)
 
-        # Query /player endpoint
-        url = f"http://127.0.0.1:{port}/player"
-        req = urllib.request.urlopen(url, timeout=3)
-        self.assertEqual(req.status, 200)
-        content = req.read().decode("utf-8")
-        self.assertIn("Vyntra HD Player", content)
-
-        stream_server.stop()
+            # Query /player endpoint
+            url = f"http://127.0.0.1:{port}/player"
+            req = urllib.request.urlopen(url, timeout=3)
+            self.assertEqual(req.status, 200)
+            content = req.read().decode("utf-8")
+            self.assertIn("Vyntra HD Player", content)
+        finally:
+            stream_server.stop()
         self.assertEqual(stream_server.port, 0)
 
     def test_stream_url_extraction(self):

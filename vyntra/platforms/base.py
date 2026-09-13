@@ -10,6 +10,9 @@ from vyntra.models import DownloadTask, MediaItem, PlatformCapabilities
 from vyntra.utils.logger import logger
 
 
+import threading
+
+
 class BasePlatformService(ABC):
     """
     Standard contract that every media platform service in Vyntra must implement.
@@ -17,7 +20,27 @@ class BasePlatformService(ABC):
     """
 
     def __init__(self):
-        self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix=f"{self.platform_id.capitalize()}Worker")
+        self._executor: Optional[ThreadPoolExecutor] = None
+        self._lock = threading.Lock()
+        self._ensure_executor()
+
+    def _ensure_executor(self):
+        with self._lock:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix=f"{self.platform_id.capitalize()}Worker")
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = True) -> None:
+        """Shuts down background platform workers cleanly."""
+        executor = None
+        with self._lock:
+            executor = self._executor
+            self._executor = None
+
+        if executor is not None:
+            try:
+                executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+            except TypeError:
+                executor.shutdown(wait=wait)
 
     @property
     @abstractmethod
@@ -59,7 +82,9 @@ class BasePlatformService(ABC):
                 logger.error("[%s] Search error: %s", self.capabilities.display_name, e)
                 on_error(e)
 
-        self._executor.submit(_task)
+        self._ensure_executor()
+        if self._executor is not None:
+            self._executor.submit(_task)
 
     def extract_from_url(self, url: str) -> Optional[MediaItem]:
         """
@@ -84,7 +109,9 @@ class BasePlatformService(ABC):
                 logger.error("[%s] URL extraction error: %s", self.capabilities.display_name, e)
                 on_error(e)
 
-        self._executor.submit(_task)
+        self._ensure_executor()
+        if self._executor is not None:
+            self._executor.submit(_task)
 
     @abstractmethod
     def prepare_playback_stream(self, item: MediaItem) -> Dict[str, Any]:
