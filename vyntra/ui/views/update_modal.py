@@ -30,8 +30,8 @@ class UpdateModal(ctk.CTkToplevel):
         self.configure(fg_color=Theme.BG_MAIN)
 
         try:
-            self.transient(master)
             if master and master.winfo_ismapped():
+                self.transient(master)
                 self.grab_set()
         except Exception:
             pass
@@ -198,7 +198,10 @@ class UpdateModal(ctk.CTkToplevel):
                     text_color=Theme.TEXT_PRIMARY,
                 )
 
-        if self.winfo_exists():
+        import threading
+        if threading.current_thread() is threading.main_thread():
+            update()
+        elif self.winfo_exists():
             self.after(0, lambda: update() if self.winfo_exists() else None)
 
     def _on_download_error(self, err_msg: str):
@@ -213,7 +216,10 @@ class UpdateModal(ctk.CTkToplevel):
             self.update_btn.configure(state="normal", text="Retry Update")
             self.later_btn.configure(state="normal", text="Close")
 
-        if self.winfo_exists():
+        import threading
+        if threading.current_thread() is threading.main_thread():
+            show_err()
+        elif self.winfo_exists():
             self.after(0, lambda: show_err() if self.winfo_exists() else None)
 
     def destroy(self):

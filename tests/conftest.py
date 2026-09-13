@@ -36,6 +36,16 @@ def pytest_sessionstart(session):
         AppearanceModeTracker.update_loop_running = False
         AppearanceModeTracker.app_list.clear()
 
+        # Neutralize CTkTextbox continuous scrollbar checking loop during test session
+        try:
+            from customtkinter.windows.widgets.ctk_textbox import CTkTextbox
+            orig_check = CTkTextbox._check_if_scrollbars_needed
+            def safe_check_scrollbars(self, event=None, continue_loop=False):
+                return orig_check(self, event, continue_loop=False)
+            CTkTextbox._check_if_scrollbars_needed = safe_check_scrollbars
+        except Exception:
+            pass
+
         # Wrap CTk and CTkToplevel destroy to cancel scheduled timers and clean trackers
         for cls in (ctk.CTk, ctk.CTkToplevel):
             orig_destroy = cls.destroy

@@ -69,8 +69,9 @@ class TestLifecycleAndShutdown(unittest.TestCase):
 
             wizard.destroy()
             root.update_idletasks()
-            # If timers remained, executing update() would have raised TclError
-            root.update()
+            # If timers remained on root or children, active timer count would be non-zero
+            active_timers = root.tk.splitlist(root.tk.eval("after info"))
+            self.assertEqual(len(active_timers), 0)
         finally:
             root.destroy()
 

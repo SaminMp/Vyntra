@@ -61,7 +61,7 @@ class TestUpdaterUI(unittest.TestCase):
                 status_text="Downloading...",
             )
             modal._on_download_progress(prog)
-            root.update()
+            root.update_idletasks()
 
             self.assertEqual(modal.progress_bar.get(), 0.5)
             self.assertIn("50%", modal.status_label.cget("text"))
