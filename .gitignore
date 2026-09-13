@@ -45,6 +45,12 @@ venv.bak/
 temp/
 scratch/
 
-# Secrets & Local credentials (allow template)
+# Secrets & Local credentials (allow templates)
+credentials.json
+*.credentials.json
 client_secret*.json
+.env
+.env.*
+!.env.example
 !credentials.template.json
+

@@ -54,6 +54,14 @@ jobs:
         run: |
           python scripts/generate_icons.py
 
+      - name: Inject Developer Credentials (if secret configured)
+        if: env.GOOGLE_CREDENTIALS_JSON != ''
+        shell: pwsh
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          Set-Content -Path "credentials.json" -Value $env:GOOGLE_CREDENTIALS_JSON
+
       - name: Build Standalone Executable with PyInstaller
         run: |
           python -m PyInstaller --clean --noconfirm Vyntra.spec
@@ -124,6 +132,13 @@ jobs:
       - name: Generate Application Icons (.png, .icns)
         run: |
           python3 scripts/generate_icons.py
+
+      - name: Inject Developer Credentials (if secret configured)
+        if: env.GOOGLE_CREDENTIALS_JSON != ''
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          echo "$GOOGLE_CREDENTIALS_JSON" > credentials.json
 
       - name: Build macOS Application Bundle with PyInstaller
         run: |

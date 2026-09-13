@@ -25,10 +25,14 @@ except Exception:
 
 # Base datas and assets
 datas = [
-    (os.path.join(project_dir, 'credentials.json'), '.'),
     (os.path.join(project_dir, 'assets', 'icon.ico'), 'assets'),
     (os.path.join(project_dir, 'assets', 'icon.png'), 'assets'),
 ]
+
+# Include developer credentials.json if present on build machine
+creds_path = os.path.join(project_dir, 'credentials.json')
+if os.path.isfile(creds_path):
+    datas.append((creds_path, '.'))
 
 # Include Apple ICNS on macOS or if present
 icns_path = os.path.join(project_dir, 'assets', 'icon.icns')
