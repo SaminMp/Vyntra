@@ -69,16 +69,25 @@ class TestUpdaterUI(unittest.TestCase):
             root.destroy()
 
     def test_settings_modal_has_update_section(self):
-        """Verifies SettingsModal includes the Updates section and check button."""
+        """Verifies SettingsModal includes clean Updates section and no technical panels."""
         root = ctk.CTk()
         root.withdraw()
         try:
             settings = SettingsModal(root)
             root.update()
 
+            # Clean update section verified
             self.assertTrue(hasattr(settings, "check_updates_btn"))
             self.assertTrue(hasattr(settings, "updater_ver_lbl"))
             self.assertIn("Installed Version", settings.updater_ver_lbl.cget("text"))
+
+            # Verify technical panels are removed
+            self.assertFalse(hasattr(settings, "auth_status_lbl"))
+            self.assertFalse(hasattr(settings, "auth_manage_btn"))
+            self.assertFalse(hasattr(settings, "media_browser_option"))
+            self.assertFalse(hasattr(settings, "cookie_entry"))
+            self.assertFalse(hasattr(settings, "insta_cookie_entry"))
+            self.assertFalse(hasattr(settings, "tiktok_cookie_entry"))
 
             settings.destroy()
         finally:

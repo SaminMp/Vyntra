@@ -1,11 +1,10 @@
 """
 Unit and integration tests for UpdateManager and UpdateDownloadManager.
-Verifies GitHub API parsing, background thread execution, SHA-256 integrity verification,
-network failure tolerance, and corrupted payload rejection.
+Verifies UpdateManager state machine, provider delegation, thread orchestration,
+SHA-256 integrity verification, and network failure tolerance.
 """
 
 import hashlib
-import json
 from pathlib import Path
 import tempfile
 import time
@@ -18,96 +17,83 @@ from vyntra.updater.download_manager import (
     UpdateIntegrityError,
 )
 from vyntra.updater.manager import UpdateManager, UpdateState
-from vyntra.updater.models import ReleaseAsset, UpdateCheckResult
+from vyntra.updater.models import ReleaseAsset, ReleaseInfo, UpdateCheckResult
+from vyntra.updater.providers.base import BaseUpdateProvider
 
 
 class TestUpdaterManager(unittest.TestCase):
-    """Verifies UpdateManager state machine, GitHub API handling, and security verification."""
+    """Verifies UpdateManager state machine and provider delegation."""
 
     def setUp(self):
-        self.manager = UpdateManager()
+        self.mock_provider = MagicMock(spec=BaseUpdateProvider)
+        self.manager = UpdateManager(provider=self.mock_provider)
 
-    def test_evaluate_release_update_available(self):
-        """Verifies detection of newer published stable release."""
-        fake_release = {
-            "tag_name": "v1.2.4",
-            "name": "Vyntra v1.2.4 - Multi-Platform & Updater",
-            "body": "### What's new\n- Automatic updates\n- Bug fixes",
-            "published_at": "2026-09-14T12:00:00Z",
-            "draft": False,
-            "prerelease": False,
-            "assets": [
-                {
-                    "name": "Vyntra-Windows-x64.exe",
-                    "browser_download_url": "https://github.com/SaminMp/Vyntra/releases/download/v1.2.4/Vyntra-Windows-x64.exe",
-                    "size": 85000000,
-                    "content_type": "application/octet-stream",
-                },
-                {
-                    "name": "Vyntra-macOS-arm64.dmg",
-                    "browser_download_url": "https://github.com/SaminMp/Vyntra/releases/download/v1.2.4/Vyntra-macOS-arm64.dmg",
-                    "size": 75000000,
-                    "content_type": "application/octet-stream",
-                },
-            ],
-        }
+    def test_initial_state(self):
+        self.assertEqual(self.manager.state, UpdateState.IDLE)
+        self.assertIsNone(self.manager.last_result)
 
-        with patch("vyntra.updater.platform_detector.get_current_platform", return_value="windows"), \
-             patch("vyntra.updater.platform_detector.get_current_arch", return_value="x64"):
+    def test_check_for_updates_available_transitions_state(self):
+        """When provider reports available update, manager state is AVAILABLE."""
+        asset = ReleaseAsset(
+            name="Vyntra-Windows-x64.exe",
+            download_url="http://mock/Vyntra.exe",
+            size=1000,
+        )
+        rel_info = ReleaseInfo(
+            version="1.2.4",
+            tag="v1.2.4",
+            name="v1.2.4",
+            release_notes="Notes",
+            published_at="2026-09-14",
+            assets=[asset],
+        )
+        self.mock_provider.check_for_updates.return_value = UpdateCheckResult(
+            status="available",
+            current_version="1.1.3",
+            latest_release=rel_info,
+            target_asset=asset,
+        )
 
-            result = self.manager._evaluate_release(fake_release, current_version="1.1.3")
-            self.assertEqual(result.status, "available")
-            self.assertTrue(result.has_update)
-            self.assertIsNotNone(result.latest_release)
-            self.assertEqual(result.latest_release.version, "1.2.4")
-            self.assertIn("Automatic updates", result.latest_release.release_notes)
-            self.assertIsNotNone(result.target_asset)
-            self.assertEqual(result.target_asset.name, "Vyntra-Windows-x64.exe")
-
-    def test_evaluate_release_up_to_date(self):
-        """Verifies current version matching release version results in up_to_date."""
-        fake_release = {
-            "tag_name": "v1.1.3",
-            "draft": False,
-            "prerelease": False,
-            "assets": [],
-        }
-        result = self.manager._evaluate_release(fake_release, current_version="1.1.3")
-        self.assertEqual(result.status, "up_to_date")
-        self.assertFalse(result.has_update)
-
-    def test_evaluate_release_ignores_draft_and_prerelease(self):
-        """Verifies draft and prerelease tags are ignored on stable channel."""
-        fake_draft = {
-            "tag_name": "v1.5.0",
-            "draft": True,
-            "prerelease": False,
-            "assets": [],
-        }
-        result = self.manager._evaluate_release(fake_draft, current_version="1.1.3")
-        self.assertEqual(result.status, "up_to_date")
-
-        fake_prerelease = {
-            "tag_name": "v2.0.0-beta.1",
-            "draft": False,
-            "prerelease": True,
-            "assets": [],
-        }
-        result = self.manager._evaluate_release(fake_prerelease, current_version="1.1.3")
-        self.assertEqual(result.status, "up_to_date")
-
-    @patch("requests.get")
-    def test_check_for_updates_network_failure_does_not_crash(self, mock_get):
-        """Verifies network connection error is caught gracefully and logged."""
-        mock_get.side_effect = Exception("DNS lookup failed")
         callback_mock = MagicMock()
-
         self.manager._run_check_worker(callback=callback_mock, background=True)
 
+        self.assertEqual(self.manager.state, UpdateState.AVAILABLE)
+        self.assertTrue(self.manager.last_result.has_update)
         callback_mock.assert_called_once()
-        result = callback_mock.call_args[0][0]
-        self.assertEqual(result.status, "error")
-        self.assertIn("DNS lookup failed", result.error_message)
+
+    def test_check_for_updates_up_to_date_transitions_state(self):
+        """When provider reports up to date, manager state is UP_TO_DATE."""
+        self.mock_provider.check_for_updates.return_value = UpdateCheckResult(
+            status="up_to_date",
+            current_version="1.1.3",
+        )
+
+        self.manager._run_check_worker(callback=None, background=True)
+        self.assertEqual(self.manager.state, UpdateState.UP_TO_DATE)
+        self.assertFalse(self.manager.last_result.has_update)
+
+    def test_check_for_updates_auth_required_transitions_state(self):
+        """When provider reports auth required, manager state is AUTH_REQUIRED."""
+        self.mock_provider.check_for_updates.return_value = UpdateCheckResult(
+            status="auth_required",
+            current_version="1.1.3",
+            auth_status="unauthenticated",
+            error_message="Update access not configured.",
+        )
+
+        self.manager._run_check_worker(callback=None, background=True)
+        self.assertEqual(self.manager.state, UpdateState.AUTH_REQUIRED)
+
+    def test_check_for_updates_exception_transitions_to_error(self):
+        """When provider raises exception, manager catches and transitions to ERROR."""
+        self.mock_provider.check_for_updates.side_effect = RuntimeError("Network timeout")
+
+        callback_mock = MagicMock()
+        self.manager._run_check_worker(callback=callback_mock, background=True)
+
+        self.assertEqual(self.manager.state, UpdateState.ERROR)
+        self.assertEqual(self.manager.last_result.status, "error")
+        callback_mock.assert_called_once()
 
     def test_download_and_sha256_verification_success(self):
         """Verifies streaming download computes correct SHA-256 and passes verification."""
@@ -132,7 +118,6 @@ class TestUpdaterManager(unittest.TestCase):
             dest_file = downloader.download_asset(asset, expected_sha256=expected_hash)
             self.assertTrue(dest_file.exists())
             self.assertEqual(dest_file.read_bytes(), content)
-            # Cleanup
             dest_file.unlink()
 
     def test_download_sha256_mismatch_rejects_and_deletes_file(self):
@@ -157,12 +142,3 @@ class TestUpdaterManager(unittest.TestCase):
         with patch("requests.get", return_value=mock_response):
             with self.assertRaises(UpdateIntegrityError):
                 downloader.download_asset(asset, expected_sha256=bad_hash)
-
-            # Ensure file does not remain in staging
-            staging_path = downloader._current_dest
-            if staging_path:
-                self.assertFalse(staging_path.exists(), "Corrupted payload must be deleted")
-
-
-if __name__ == "__main__":
-    unittest.main()

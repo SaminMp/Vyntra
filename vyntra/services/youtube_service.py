@@ -279,7 +279,7 @@ class YouTubeService:
         if "Sign in to confirm you’re not a bot" in raw or "confirm you're not a bot" in raw or "LOGIN_REQUIRED" in raw:
             return (
                 "YouTube requires sign-in verification for this video. "
-                "Please configure YouTube Media Access in Settings."
+                "Please sign in with your Google account in Settings."
             )
         if "Private video" in raw:
             return "This video is private and cannot be accessed."
@@ -333,7 +333,7 @@ class YouTubeService:
             elif "Sign in to confirm you’re not a bot" in err_str or "confirm you're not a bot" in err_str:
                 msg = (
                     "YouTube requires sign-in verification. "
-                    "Please select an authenticated browser session in Settings or provide a cookie file."
+                    "Please sign in with your Google account in Settings."
                 )
                 config_manager.update(youtube_media_status="failed", youtube_media_status_message=msg)
                 return (False, f"⚠️ {msg}")

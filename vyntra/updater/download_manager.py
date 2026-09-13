@@ -56,11 +56,14 @@ class UpdateDownloadManager:
         self,
         asset: ReleaseAsset,
         expected_sha256: Optional[str] = None,
+        auth_token: Optional[str] = None,
         on_progress: Optional[Callable[[DownloadProgress], None]] = None,
     ) -> Path:
         """
         Downloads a release asset to staging, verifies its SHA-256 digest,
         and returns the local Path to the verified asset file.
+        Supports authenticated private GitHub asset endpoints with automatic
+        S3 cross-domain redirect header sanitization.
 
         Raises:
             UpdateIntegrityError: If checksum verification fails.
@@ -84,6 +87,8 @@ class UpdateDownloadManager:
             "User-Agent": USER_AGENT_TEMPLATE.format(version="1.1.3"),
             "Accept": "application/octet-stream",
         }
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token.strip()}"
 
         hasher = hashlib.sha256()
         downloaded = 0
@@ -94,11 +99,36 @@ class UpdateDownloadManager:
         bytes_since_last = 0
         current_speed = 0.0
 
+        # Prefer asset API URL for private repositories; fallback to download_url
+        initial_url = asset.api_url or asset.download_url
+
         try:
-            logger.info("[Updater] Starting download of asset: %s (%s)", asset.name, asset.download_url)
-            with requests.get(
-                asset.download_url,
+            logger.info("[Updater] Starting download of asset: %s (%s)", asset.name, initial_url)
+
+            # Step 1: Probe initial URL without automatic redirect to handle S3 authorization stripping
+            probe_resp = requests.get(
+                initial_url,
                 headers=headers,
+                allow_redirects=False,
+                timeout=(NETWORK_CONNECT_TIMEOUT, NETWORK_READ_TIMEOUT),
+            )
+
+            stream_url = initial_url
+            stream_headers = dict(headers)
+
+            if probe_resp.status_code in (301, 302, 303, 307, 308):
+                redirect_url = probe_resp.headers.get("Location")
+                if redirect_url:
+                    stream_url = redirect_url
+                    # Strip Authorization header for S3 pre-signed storage to avoid AWS 400 InvalidArgument
+                    stream_headers.pop("Authorization", None)
+                    logger.debug("[Updater] Following authenticated asset redirect to storage: %s", stream_url[:60])
+            elif probe_resp.status_code >= 400:
+                probe_resp.raise_for_status()
+
+            with requests.get(
+                stream_url,
+                headers=stream_headers,
                 stream=True,
                 timeout=(NETWORK_CONNECT_TIMEOUT, NETWORK_READ_TIMEOUT),
             ) as response:

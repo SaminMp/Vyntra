@@ -605,6 +605,28 @@ class VyntraApp(ctk.CTk):
         self._update_auth_badge()
         self.status_banner.show_info("Preferences updated successfully.")
 
+    def _handle_update_result(self, result: UpdateCheckResult):
+        """Processes update check results emitted by update_manager."""
+        self._pending_update = result
+        if result.status == "available":
+            v = result.latest_release.version if result.latest_release else ""
+            self.update_badge_btn.configure(text=f"✨ Update v{v}")
+            self.update_badge_btn.pack(side="left", padx=(0, 8))
+            self.footer_terminal.log(f"[Updater] New version v{v} available", level="info")
+        elif result.status == "auth_required":
+            self.update_badge_btn.pack_forget()
+            logger.debug("[Updater] Private release check unavailable: Update Access not configured.")
+        elif result.status == "up_to_date":
+            self.update_badge_btn.pack_forget()
+            logger.debug("[Updater] Vyntra is running the latest version.")
+        else:
+            self.update_badge_btn.pack_forget()
+
+    def _open_update_modal(self):
+        """Opens the update modal when user clicks the header update badge."""
+        if self._pending_update and self._pending_update.has_update:
+            UpdateModal(self, check_result=self._pending_update)
+
     def _on_app_close(self):
         """Clean shutdown of all platform pages, background tasks, and application."""
         for page in getattr(self, "_pages", {}).values():

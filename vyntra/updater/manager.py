@@ -5,21 +5,11 @@ state transitions, download verification, and platform installation handoff.
 """
 
 from enum import Enum
-import json
 from pathlib import Path
 import threading
-from typing import Callable, Dict, List, Optional
-import requests
+from typing import Callable, List, Optional, Tuple
 
 from vyntra import __version__
-from vyntra.updater.constants import (
-    CHECKSUM_FILE_NAMES,
-    DEFAULT_CHANNEL,
-    LATEST_RELEASE_API_URL,
-    NETWORK_CONNECT_TIMEOUT,
-    NETWORK_READ_TIMEOUT,
-    USER_AGENT_TEMPLATE,
-)
 from vyntra.updater.download_manager import (
     UpdateDownloadError,
     UpdateDownloadManager,
@@ -35,9 +25,9 @@ from vyntra.updater.models import (
 from vyntra.updater.platform_detector import (
     get_installed_binary_path,
     is_frozen,
-    select_platform_asset,
 )
-from vyntra.updater.version_utils import is_newer, normalize_tag
+from vyntra.updater.providers.base import BaseUpdateProvider
+from vyntra.updater.providers.service_provider import VyntraUpdateServiceProvider
 from vyntra.utils.logger import logger
 
 
@@ -47,6 +37,7 @@ class UpdateState(str, Enum):
     AVAILABLE = "available"
     UP_TO_DATE = "up_to_date"
     NO_COMPATIBLE_ASSET = "no_compatible_asset"
+    AUTH_REQUIRED = "auth_required"
     DOWNLOADING = "downloading"
     VERIFYING = "verifying"
     READY_TO_INSTALL = "ready_to_install"
@@ -60,12 +51,17 @@ class UpdateManager:
     Thread-safe and designed for non-blocking UI integration.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        provider: Optional[BaseUpdateProvider] = None,
+    ):
         self._state = UpdateState.IDLE
         self._check_lock = threading.Lock()
         self._update_lock = threading.Lock()
         self._listeners: List[Callable[[UpdateCheckResult], None]] = []
-        self._downloader = UpdateDownloadManager()
+
+        self.provider = provider or VyntraUpdateServiceProvider()
+        self._downloader = getattr(self.provider, "downloader", None) or UpdateDownloadManager()
 
         self._last_result: Optional[UpdateCheckResult] = None
         self._staged_asset_path: Optional[Path] = None
@@ -120,7 +116,7 @@ class UpdateManager:
         callback: Optional[Callable[[UpdateCheckResult], None]],
         background: bool,
     ):
-        """Worker thread executing HTTP request against GitHub Releases."""
+        """Worker thread executing release check via configured UpdateProvider."""
         if not self._check_lock.acquire(blocking=False):
             logger.debug("[Updater] Update check already in progress. Ignoring duplicate request.")
             return
@@ -130,53 +126,21 @@ class UpdateManager:
         result: Optional[UpdateCheckResult] = None
 
         try:
-            logger.info("[Updater] Checking GitHub Releases for updates (current: v%s)...", current_version)
-            headers = {
-                "User-Agent": USER_AGENT_TEMPLATE.format(version=current_version),
-                "Accept": "application/vnd.github.v3+json",
-            }
+            result = self.provider.check_for_updates(current_version)
 
-            resp = requests.get(
-                LATEST_RELEASE_API_URL,
-                headers=headers,
-                timeout=(NETWORK_CONNECT_TIMEOUT, NETWORK_READ_TIMEOUT),
-            )
-
-            if resp.status_code == 404:
-                # No releases published yet on the repository
-                logger.info("[Updater] No published releases found on repository.")
-                result = UpdateCheckResult(
-                    status="up_to_date",
-                    current_version=current_version,
-                )
+            if result.status == "available":
+                self._state = UpdateState.AVAILABLE
+            elif result.status == "up_to_date":
                 self._state = UpdateState.UP_TO_DATE
-            elif resp.status_code != 200:
-                err_msg = f"GitHub API returned HTTP {resp.status_code}"
-                logger.warning("[Updater] %s", err_msg)
-                result = UpdateCheckResult(
-                    status="error",
-                    current_version=current_version,
-                    error_message=err_msg,
-                )
-                self._state = UpdateState.ERROR
+            elif result.status == "auth_required":
+                self._state = UpdateState.AUTH_REQUIRED
+            elif result.status == "no_asset":
+                self._state = UpdateState.NO_COMPATIBLE_ASSET
             else:
-                release_data = resp.json()
-                result = self._evaluate_release(release_data, current_version)
-
-        except requests.exceptions.Timeout:
-            msg = "Network connection timed out"
-            logger.warning("[Updater] Update check failed: %s", msg)
-            result = UpdateCheckResult(status="error", current_version=current_version, error_message=msg)
-            self._state = UpdateState.ERROR
-
-        except requests.exceptions.ConnectionError:
-            msg = "Network unavailable"
-            logger.info("[Updater] Update check failed: %s", msg)
-            result = UpdateCheckResult(status="error", current_version=current_version, error_message=msg)
-            self._state = UpdateState.ERROR
+                self._state = UpdateState.ERROR
 
         except Exception as e:
-            logger.warning("[Updater] Unexpected error checking for updates: %s", e)
+            logger.warning("[Updater] Unexpected error running update check: %s", e)
             result = UpdateCheckResult(status="error", current_version=current_version, error_message=str(e))
             self._state = UpdateState.ERROR
 
@@ -191,120 +155,6 @@ class UpdateManager:
                     except Exception as e:
                         logger.debug("[Updater] Check callback exception: %s", e)
                 self._notify_listeners(result)
-
-    def _evaluate_release(self, data: Dict, current_version: str) -> UpdateCheckResult:
-        """Parses GitHub release JSON and compares against current installed version."""
-        tag_name = data.get("tag_name", "")
-        release_version = normalize_tag(tag_name)
-        is_draft = data.get("draft", False)
-        is_prerelease = data.get("prerelease", False)
-
-        # Ignore draft releases or unreleased tags
-        if is_draft or (is_prerelease and DEFAULT_CHANNEL == "stable"):
-            logger.info("[Updater] Latest release tag %s is draft or prerelease. Ignoring for stable channel.", tag_name)
-            self._state = UpdateState.UP_TO_DATE
-            return UpdateCheckResult(
-                status="up_to_date",
-                current_version=current_version,
-            )
-
-        # Parse attached release assets
-        raw_assets = data.get("assets", [])
-        assets: List[ReleaseAsset] = []
-        checksum_url: Optional[str] = None
-
-        for a in raw_assets:
-            name = a.get("name", "")
-            download_url = a.get("browser_download_url", "")
-            size = a.get("size", 0)
-            content_type = a.get("content_type", "")
-            digest = a.get("digest")
-
-            # Check if this asset is a SHA-256 checksums manifest
-            if any(name.lower() == cfn.lower() for cfn in CHECKSUM_FILE_NAMES):
-                checksum_url = download_url
-
-            assets.append(
-                ReleaseAsset(
-                    name=name,
-                    download_url=download_url,
-                    size=size,
-                    sha256=digest,
-                    content_type=content_type,
-                )
-            )
-
-        # Parse checksum file if present
-        checksums_map: Dict[str, str] = {}
-        if checksum_url:
-            checksums_map = self._fetch_checksums_map(checksum_url)
-            for asset in assets:
-                if asset.name in checksums_map:
-                    asset.sha256 = checksums_map[asset.name]
-
-        release_info = ReleaseInfo(
-            version=release_version,
-            tag=tag_name,
-            name=data.get("name") or tag_name,
-            release_notes=data.get("body") or "No release notes provided.",
-            published_at=data.get("published_at", ""),
-            is_draft=is_draft,
-            is_prerelease=is_prerelease,
-            assets=assets,
-            checksums=checksums_map,
-            html_url=data.get("html_url", ""),
-        )
-
-        # Check semantic version precedence
-        if is_newer(release_version, current_version):
-            target_asset = select_platform_asset(assets)
-            if target_asset:
-                logger.info(
-                    "[Updater] New update available: v%s (target asset: %s, size: %.1f MB)",
-                    release_version,
-                    target_asset.name,
-                    target_asset.size_mb,
-                )
-                self._state = UpdateState.AVAILABLE
-                return UpdateCheckResult(
-                    status="available",
-                    current_version=current_version,
-                    latest_release=release_info,
-                    target_asset=target_asset,
-                )
-            else:
-                logger.warning("[Updater] New version v%s available, but no compatible asset found for host platform.", release_version)
-                self._state = UpdateState.NO_COMPATIBLE_ASSET
-                return UpdateCheckResult(
-                    status="no_asset",
-                    current_version=current_version,
-                    latest_release=release_info,
-                    error_message=f"Version v{release_version} is available, but no compatible package was found for your operating system.",
-                )
-        else:
-            logger.info("[Updater] Vyntra is up to date (current: v%s, latest: v%s).", current_version, release_version)
-            self._state = UpdateState.UP_TO_DATE
-            return UpdateCheckResult(
-                status="up_to_date",
-                current_version=current_version,
-                latest_release=release_info,
-            )
-
-    def _fetch_checksums_map(self, url: str) -> Dict[str, str]:
-        """Downloads and parses SHA256SUMS.txt format into {filename: sha256}."""
-        mapping = {}
-        try:
-            resp = requests.get(url, timeout=(NETWORK_CONNECT_TIMEOUT, NETWORK_READ_TIMEOUT))
-            if resp.status_code == 200:
-                for line in resp.text.splitlines():
-                    parts = line.strip().split()
-                    if len(parts) >= 2:
-                        h = parts[0].strip().lower()
-                        fn = parts[-1].strip().lstrip("*")
-                        mapping[fn] = h
-        except Exception as e:
-            logger.warning("[Updater] Could not fetch checksums from %s: %s", url, e)
-        return mapping
 
     # -------------------------------------------------------------------------
     # 2. Download & Installation Lifecycle
@@ -344,8 +194,8 @@ class UpdateManager:
         self._state = UpdateState.DOWNLOADING
 
         try:
-            # 1. Download and cryptographic verification
-            staged_path = self._downloader.download_asset(
+            # 1. Download and cryptographic verification via provider
+            staged_path = self.provider.download_asset(
                 asset=asset,
                 expected_sha256=asset.sha256,
                 on_progress=on_progress,
@@ -413,7 +263,10 @@ class UpdateManager:
 
     def cancel_download(self):
         """Cancels active download and cleans up staging file."""
-        self._downloader.cancel()
+        if hasattr(self.provider, "downloader") and self.provider.downloader:
+            self.provider.downloader.cancel()
+        elif self._downloader:
+            self._downloader.cancel()
         self._state = UpdateState.IDLE
 
 

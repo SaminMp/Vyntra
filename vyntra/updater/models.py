@@ -12,6 +12,8 @@ class ReleaseAsset:
     name: str
     download_url: str
     size: int
+    asset_id: Optional[int] = None
+    api_url: Optional[str] = None
     sha256: Optional[str] = None
     platform: Optional[str] = None    # "windows" or "darwin"
     arch: Optional[str] = None        # "x64" or "arm64"
@@ -46,11 +48,12 @@ class ReleaseInfo:
 @dataclass
 class UpdateCheckResult:
     """Result of an update check evaluation."""
-    status: str                         # "available", "up_to_date", "no_asset", "error"
+    status: str                         # "available", "up_to_date", "no_asset", "error", "auth_required"
     current_version: str
     latest_release: Optional[ReleaseInfo] = None
     target_asset: Optional[ReleaseAsset] = None
     error_message: Optional[str] = None
+    auth_status: str = "ok"             # "ok", "unauthenticated", "invalid_token"
 
     @property
     def has_update(self) -> bool:

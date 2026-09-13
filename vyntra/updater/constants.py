@@ -17,6 +17,10 @@ GITHUB_API_BASE: str = "https://api.github.com"
 LATEST_RELEASE_API_URL: str = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 ALL_RELEASES_API_URL: str = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
 
+# Vyntra Update Service Configuration (Server-Side Proxy Architecture)
+DEFAULT_UPDATE_SERVICE_URL: str = "https://updates.vyntra.app"
+ENV_UPDATE_SERVICE_URL_VAR: str = "VYNTRA_UPDATE_SERVICE_URL"
+
 # Release channels
 CHANNEL_STABLE: str = "stable"
 CHANNEL_BETA: str = "beta"

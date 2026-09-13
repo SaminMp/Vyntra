@@ -179,8 +179,8 @@ class TestYouTubeServiceErrorClassification(unittest.TestCase):
     def test_classify_bot_verification(self):
         err = Exception("Sign in to confirm you’re not a bot. Use --cookies-from-browser")
         classified = self.service.classify_error(err)
-        self.assertIn("YouTube requires sign-in verification", classified)
-        self.assertIn("Media Access", classified)
+        self.assertIn("sign-in verification", classified.lower())
+        self.assertIn("google account", classified.lower())
 
     def test_classify_private_video(self):
         err = Exception("ERROR: [youtube] abc: Private video")
