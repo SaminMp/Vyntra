@@ -17,6 +17,11 @@ is_windows = sys.platform == "win32"
 
 # Root project directory
 project_dir = os.path.abspath(SPECPATH)
+try:
+    sys.path.insert(0, project_dir)
+    from vyntra import __version__ as app_version
+except Exception:
+    app_version = "1.1.3"
 
 # Base datas and assets
 datas = [
@@ -47,6 +52,18 @@ hiddenimports = [
     'vyntra.platforms.tiktok',
     'vyntra.platforms.spotify',
     'vyntra.ui.pages',
+    'vyntra.ui.views.update_modal',
+    'vyntra.updater',
+    'vyntra.updater.constants',
+    'vyntra.updater.version_utils',
+    'vyntra.updater.models',
+    'vyntra.updater.platform_detector',
+    'vyntra.updater.download_manager',
+    'vyntra.updater.installers',
+    'vyntra.updater.installers.base',
+    'vyntra.updater.installers.windows_installer',
+    'vyntra.updater.installers.macos_installer',
+    'vyntra.updater.manager',
     'curl_cffi',
     'curl_cffi.requests',
     '_cffi_backend',
@@ -158,8 +175,8 @@ if is_darwin:
             'CFBundleName': 'Vyntra',
             'CFBundlePackageType': 'APPL',
             'CFBundleSignature': '????',
-            'CFBundleShortVersionString': '1.1.2',
-            'CFBundleVersion': '1.1.2',
+            'CFBundleShortVersionString': app_version,
+            'CFBundleVersion': app_version,
             'NSHighResolutionCapable': True,
             'NSRequiresAquaSystemAppearance': False,
             'LSApplicationCategoryType': 'public.app-category.music',

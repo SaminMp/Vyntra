@@ -8,6 +8,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   # ============================================================================
   # 1. BUILD WINDOWS STANDALONE EXECUTABLE (.exe)
@@ -40,16 +43,21 @@ jobs:
         run: |
           python -m PyInstaller --clean --noconfirm Vyntra.spec
 
-      - name: Package Windows Executable
+      - name: Stage Windows Release Assets
         shell: pwsh
         run: |
+          Copy-Item dist/Vyntra.exe dist/Vyntra-Windows-x64.exe
           Compress-Archive -Path dist/Vyntra.exe -DestinationPath dist/Vyntra-Windows-x64.zip
+          (Get-FileHash dist/Vyntra-Windows-x64.exe -Algorithm SHA256).Hash.ToLower() + "  Vyntra-Windows-x64.exe" | Out-File -Encoding ascii dist/Vyntra-Windows-x64.exe.sha256
 
-      - name: Upload Windows Artifact
+      - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Vyntra-Windows-x64
-          path: dist/Vyntra-Windows-x64.zip
+          name: windows-assets
+          path: |
+            dist/Vyntra-Windows-x64.exe
+            dist/Vyntra-Windows-x64.zip
+            dist/Vyntra-Windows-x64.exe.sha256
           if-no-files-found: error
 
   # ============================================================================
@@ -95,10 +103,53 @@ jobs:
             -format UDZO \
             dist/Vyntra-macOS.dmg
           rm -rf dist/dmg_staging
+          shasum -a 256 dist/Vyntra-macOS.dmg > dist/Vyntra-macOS.dmg.sha256
 
       - name: Upload macOS DMG Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Vyntra-macOS-Apple-Silicon
-          path: dist/Vyntra-macOS.dmg
+          name: macos-assets
+          path: |
+            dist/Vyntra-macOS.dmg
+            dist/Vyntra-macOS.dmg.sha256
           if-no-files-found: error
+
+  # ============================================================================
+  # 3. PUBLISH GITHUB RELEASE (Triggered on v* git tags)
+  # ============================================================================
+  publish-release:
+    name: Publish Official GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download All Built Release Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_assets/
+          merge-multiple: true
+
+      - name: Compute Unified SHA256SUMS.txt
+        working-directory: release_assets
+        run: |
+          ls -la
+          sha256sum Vyntra-Windows-x64.exe Vyntra-macOS.dmg > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release_assets/Vyntra-Windows-x64.exe
+            release_assets/Vyntra-Windows-x64.zip
+            release_assets/Vyntra-macOS.dmg
+            release_assets/SHA256SUMS.txt
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

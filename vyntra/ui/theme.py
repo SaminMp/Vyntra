@@ -41,6 +41,7 @@ class Theme:
 
     # Typography Colors
     TEXT_PRIMARY = "#F8FAFC"     # White / Near white
+    TEXT_MAIN = TEXT_PRIMARY     # Compatibility alias
     TEXT_SECONDARY = "#94A3B8"   # Slate 400
     TEXT_MUTED = "#64748B"       # Slate 500
     TEXT_ACCENT = "#818CF8"      # Light Indigo

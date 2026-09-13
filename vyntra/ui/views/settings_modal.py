@@ -3,6 +3,7 @@ Settings and preferences modal dialog with YouTube Authentication configuration.
 """
 
 from pathlib import Path
+import platform
 import threading
 from tkinter import filedialog
 from typing import Callable, Optional
@@ -14,6 +15,8 @@ from vyntra.models import AudioQuality, MediaFormat
 from vyntra.services.auth_service import auth_service
 from vyntra.services.ffmpeg_service import ffmpeg_service
 from vyntra.ui.theme import Theme
+from vyntra.ui.views.update_modal import UpdateModal
+from vyntra.updater.manager import update_manager
 
 
 class SettingsModal(ctk.CTkToplevel):
@@ -59,6 +62,7 @@ class SettingsModal(ctk.CTkToplevel):
         self._build_auth_settings()
         self._build_platform_settings()
         self._build_diagnostics_section()
+        self._build_updates_section()
         self._build_action_buttons()
 
     def _build_general_settings(self):
@@ -592,6 +596,113 @@ class SettingsModal(ctk.CTkToplevel):
             wraplength=480,
         )
         ffmpeg_info.pack(padx=12, pady=8, anchor="w")
+        self._next_row = row + 1
+
+    def _build_updates_section(self):
+        """Builds software updates and release channel section."""
+        row = self._next_row
+        sec_label = ctk.CTkLabel(
+            self.scroll_frame,
+            text="🚀 Application Updates & About",
+            font=Theme.FONT_HEADER,
+            text_color=Theme.TEXT_ACCENT,
+        )
+        sec_label.grid(row=row, column=0, columnspan=2, padx=16, pady=(16, 6), sticky="w")
+        row += 1
+
+        info_box = ctk.CTkFrame(self.scroll_frame, fg_color=Theme.BG_INPUT, corner_radius=6)
+        info_box.grid(row=row, column=0, columnspan=2, padx=16, pady=(0, 10), sticky="ew")
+        info_box.grid_columnconfigure(0, weight=1)
+
+        self.updater_ver_lbl = ctk.CTkLabel(
+            info_box,
+            text=f"Installed Version: v{__version__}  |  Channel: Stable",
+            font=Theme.FONT_BODY_BOLD,
+            text_color=Theme.TEXT_PRIMARY,
+        )
+        self.updater_ver_lbl.grid(row=0, column=0, padx=12, pady=(10, 4), sticky="w")
+
+        self.updater_status_lbl = ctk.CTkLabel(
+            info_box,
+            text="Automatic update checking is active on launch.",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_MUTED,
+        )
+        self.updater_status_lbl.grid(row=1, column=0, padx=12, pady=(0, 10), sticky="w")
+
+        btn_bar = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        btn_bar.grid(row=row + 1, column=0, columnspan=2, padx=16, pady=(0, 12), sticky="ew")
+
+        self.check_updates_btn = ctk.CTkButton(
+            btn_bar,
+            text="Check for Updates",
+            font=Theme.FONT_CAPTION,
+            height=30,
+            width=140,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.PRIMARY,
+            hover_color=Theme.PRIMARY_HOVER,
+            command=self._on_check_updates_clicked,
+        )
+        self.check_updates_btn.pack(side="left")
+
+        self.install_update_btn = ctk.CTkButton(
+            btn_bar,
+            text="Update Vyntra Now",
+            font=(Theme.FONT_FAMILY, 11, "bold"),
+            height=30,
+            width=140,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.SUCCESS,
+            hover_color="#059669",
+            command=self._on_open_update_modal_clicked,
+        )
+        self.install_update_btn.pack(side="left", padx=10)
+        self.install_update_btn.pack_forget()
+
+        self._next_row = row + 2
+
+    def _on_check_updates_clicked(self):
+        self.check_updates_btn.configure(state="disabled", text="Checking...")
+        self.updater_status_lbl.configure(text="Querying GitHub Releases API...", text_color=Theme.TEXT_MUTED)
+
+        def _on_done(result):
+            def update():
+                if not self.winfo_exists():
+                    return
+                self.check_updates_btn.configure(state="normal", text="Check for Updates")
+                if result.status == "available":
+                    v = result.latest_release.version if result.latest_release else ""
+                    self.updater_status_lbl.configure(
+                        text=f"New version v{v} is available!",
+                        text_color=Theme.SUCCESS,
+                    )
+                    self.install_update_btn.pack(side="left", padx=10)
+                elif result.status == "up_to_date":
+                    self.updater_status_lbl.configure(
+                        text=f"You're up to date. Vyntra v{__version__} is the latest version.",
+                        text_color=Theme.TEXT_PRIMARY,
+                    )
+                    self.install_update_btn.pack_forget()
+                elif result.status == "no_asset":
+                    self.updater_status_lbl.configure(
+                        text=result.error_message or "New release found, but no compatible package for this OS.",
+                        text_color=Theme.WARNING,
+                    )
+                    self.install_update_btn.pack_forget()
+                else:
+                    self.updater_status_lbl.configure(
+                        text=f"Check failed: {result.error_message or 'Network error'}",
+                        text_color=Theme.WARNING,
+                    )
+                    self.install_update_btn.pack_forget()
+            self.after(0, update)
+
+        update_manager.check_for_updates(callback=_on_done, background=False)
+
+    def _on_open_update_modal_clicked(self):
+        if update_manager.last_result and update_manager.last_result.has_update:
+            UpdateModal(self, check_result=update_manager.last_result)
 
     def _build_action_buttons(self):
         """Save and Close buttons."""

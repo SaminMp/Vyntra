@@ -29,7 +29,10 @@ from vyntra.ui.views.account_modal import AccountModal
 from vyntra.ui.views.player_modal import VideoPlayerModal
 from vyntra.ui.views.settings_modal import SettingsModal
 from vyntra.ui.views.setup_wizard import SetupWizard
+from vyntra.ui.views.update_modal import UpdateModal
 from vyntra.ui.views.watch_later_view import WatchLaterView
+from vyntra.updater.manager import update_manager
+from vyntra.updater.models import UpdateCheckResult
 from vyntra.utils.logger import logger
 
 
@@ -104,6 +107,12 @@ class VyntraApp(ctk.CTk):
 
         # Check FFmpeg on launch and show subtle log in terminal
         self._check_initial_ffmpeg_status()
+
+        # Background update check on launch
+        self._pending_update: Optional[UpdateCheckResult] = None
+        self._update_listener = lambda res: self.after(0, lambda r=res: self._handle_update_result(r))
+        update_manager.add_listener(self._update_listener)
+        self.after(1000, lambda: update_manager.check_for_updates(background=True))
 
         # First run: Show Setup Wizard if not completed
         if not config_manager.config.setup_completed:
@@ -194,6 +203,21 @@ class VyntraApp(ctk.CTk):
         # Right Action Buttons (Account Badge, Watch Later, Downloads & Settings)
         actions_box = ctk.CTkFrame(header, fg_color="transparent")
         actions_box.grid(row=0, column=2, padx=16, pady=10, sticky="e")
+
+        # Update Available Button (hidden by default until a newer version is discovered)
+        self.update_badge_btn = ctk.CTkButton(
+            actions_box,
+            text="✨ Update Available",
+            font=(Theme.FONT_FAMILY, 11, "bold"),
+            height=30,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.SUCCESS,
+            hover_color="#059669",
+            text_color="#FFFFFF",
+            command=self._open_update_modal,
+        )
+        self.update_badge_btn.pack(side="left", padx=(0, 8))
+        self.update_badge_btn.pack_forget()
 
         # Account Status Badge Button
         self.account_btn = ctk.CTkButton(
@@ -392,6 +416,8 @@ class VyntraApp(ctk.CTk):
     def _on_app_close(self):
         """Terminates player modal, streams, server, and closes window."""
         try:
+            if hasattr(self, "_update_listener"):
+                update_manager.remove_listener(self._update_listener)
             if hasattr(self, "_log_bridge"):
                 logger.removeHandler(self._log_bridge)
             if hasattr(self, "_auth_listener"):
@@ -403,6 +429,27 @@ class VyntraApp(ctk.CTk):
         except Exception:
             pass
         self.destroy()
+
+    def _handle_update_result(self, result: UpdateCheckResult):
+        """Processes update check results on the UI thread."""
+        if result.status == "available" and result.target_asset:
+            self._pending_update = result
+            version_str = result.latest_release.version if result.latest_release else ""
+            self.update_badge_btn.configure(text=f"✨ Update v{version_str}")
+            self.update_badge_btn.pack(side="left", padx=(0, 8), before=self.account_btn)
+
+            # Log to footer terminal with actionable button
+            self.footer_terminal.log(
+                f"New version v{version_str} available! Click 'Update Now' to inspect release notes and install.",
+                level="info",
+                action_text="Update Now",
+                on_action=self._open_update_modal,
+            )
+
+    def _open_update_modal(self):
+        """Opens UpdateModal for pending release."""
+        if self._pending_update and self._pending_update.has_update:
+            UpdateModal(self, check_result=self._pending_update)
 
     def _handle_start_download(
         self,
