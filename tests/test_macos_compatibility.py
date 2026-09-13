@@ -76,6 +76,11 @@ class TestMacOSCompatibility(unittest.TestCase):
         """Verifies dist/Vyntra.app bundle structure, Info.plist, and launcher."""
         root = Path(__file__).resolve().parent.parent
         app_bundle = root / "dist" / "Vyntra.app"
+        zip_file = root / "dist" / "Vyntra-macOS-Portable.zip"
+        
+        if not app_bundle.exists() or not zip_file.exists():
+            from scripts.package_mac_app import package_mac_app
+            package_mac_app()
         
         self.assertTrue(app_bundle.is_dir(), "dist/Vyntra.app directory must exist")
         self.assertTrue((app_bundle / "Contents" / "Info.plist").is_file(), "Info.plist must exist")
@@ -86,7 +91,6 @@ class TestMacOSCompatibility(unittest.TestCase):
         self.assertTrue((app_bundle / "Contents" / "Resources" / "vyntra").is_dir(), "vyntra package must exist in Resources")
         
         # Verify portable zip
-        zip_file = root / "dist" / "Vyntra-macOS-Portable.zip"
         self.assertTrue(zip_file.is_file(), "dist/Vyntra-macOS-Portable.zip must exist")
         self.assertGreater(zip_file.stat().st_size, 100000)
 
