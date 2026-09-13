@@ -144,6 +144,54 @@ class TestSpotifyAndPlatformSelector(unittest.TestCase):
         finally:
             app.destroy()
 
+    def test_spotify_card_and_panel_action_buttons(self):
+        """Verifies Spotify page panel action buttons and per-card Preview/Download/Select buttons."""
+        app = VyntraApp()
+        try:
+            app._switch_platform("spotify")
+            sp = app._pages["spotify"]
+            app.update_idletasks()
+
+            # Verify panel buttons exist and are placed on row 3, distinct from progress_frame (row 4)
+            actions_info = sp.preview_btn.master.grid_info()
+            progress_info = sp.progress_frame.grid_info()
+            self.assertEqual(actions_info["row"], 3)
+            # progress_frame should be configured on row 4 when gridded
+            self.assertEqual(sp.progress_frame.grid_info().get("row", 4), 4)
+            self.assertTrue(sp.preview_btn.winfo_exists())
+            self.assertTrue(sp.download_mp3_btn.winfo_exists())
+            self.assertIn("Download MP3", sp.download_mp3_btn.cget("text"))
+
+            # Render a test track
+            item = MediaItem(
+                video_id="spot_1",
+                title="Levitating",
+                channel="Dua Lipa",
+                album="Future Nostalgia",
+                duration_seconds=203,
+                duration_formatted="3:23",
+                thumbnail_url="",
+                url="https://open.spotify.com/track/spot_1",
+                platform="spotify",
+            )
+            sp._display_results([item], sp.next_generation())
+            app.update_idletasks()
+
+            self.assertEqual(len(sp._cards), 1)
+            card = sp._cards[0]
+
+            # Find action buttons container in card
+            action_frames = [w for w in card.winfo_children() if isinstance(w, ctk.CTkFrame)]
+            self.assertTrue(len(action_frames) > 0)
+            btn_texts = [b.cget("text") for b in action_frames[0].winfo_children() if isinstance(b, ctk.CTkButton)]
+
+            # Check that Preview, Download, and Select buttons all exist on the card
+            self.assertTrue(any("Preview" in t for t in btn_texts))
+            self.assertTrue(any("Download" in t for t in btn_texts))
+            self.assertTrue(any("Select" in t for t in btn_texts))
+        finally:
+            app.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()

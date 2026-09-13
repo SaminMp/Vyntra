@@ -171,7 +171,7 @@ class SpotifyPage(BasePlatformPage):
 
         # Row 3: Action Buttons row: [ Play Preview ] and [ Download MP3 ]
         actions_row = ctk.CTkFrame(panel, fg_color="transparent")
-        actions_row.grid(row=3, column=0, columnspan=3, sticky="ew", padx=16, pady=(8, 12))
+        actions_row.grid(row=3, column=0, columnspan=3, sticky="ew", padx=16, pady=(8, 8))
 
         self.preview_btn = ctk.CTkButton(
             actions_row,
@@ -197,9 +197,9 @@ class SpotifyPage(BasePlatformPage):
         )
         self.download_mp3_btn.pack(side="left")
 
-        # Progress bar
+        # Row 4: Progress Section (shown during download)
         self.progress_frame = ctk.CTkFrame(panel, fg_color="transparent")
-        self.progress_frame.grid(row=3, column=0, columnspan=3, sticky="ew", padx=16, pady=(0, 12))
+        self.progress_frame.grid(row=4, column=0, columnspan=3, sticky="ew", padx=16, pady=(0, 12))
         self.progress_frame.grid_columnconfigure(0, weight=1)
 
         self.status_msg = ctk.CTkLabel(self.progress_frame, text="Ready", font=Theme.FONT_CAPTION, text_color=Theme.TEXT_MUTED)
@@ -208,6 +208,7 @@ class SpotifyPage(BasePlatformPage):
         self.progress_bar = ctk.CTkProgressBar(self.progress_frame, height=6, corner_radius=3)
         self.progress_bar.grid(row=1, column=0, sticky="ew")
         self.progress_bar.set(0.0)
+        self.progress_frame.grid_remove()
 
     def _browse_folder(self):
         chosen = filedialog.askdirectory(initialdir=self.folder_entry.get())
@@ -316,29 +317,66 @@ class SpotifyPage(BasePlatformPage):
         meta_lbl = ctk.CTkLabel(card, text=artist_text, font=Theme.FONT_CAPTION, text_color=Theme.TEXT_MUTED, anchor="w")
         meta_lbl.grid(row=1, column=1, sticky="w", padx=(4, 8), pady=(0, 10))
 
-        # Select button
+        # Action Buttons container (Preview, Download, Select)
+        card_actions = ctk.CTkFrame(card, fg_color="transparent")
+        card_actions.grid(row=0, column=2, rowspan=2, padx=12, pady=10, sticky="e")
+
+        card_preview_btn = ctk.CTkButton(
+            card_actions,
+            text="▶ Preview",
+            font=Theme.FONT_CAPTION,
+            width=76,
+            height=30,
+            fg_color=Theme.BG_MUTED,
+            hover_color=Theme.ACCENT_CYAN,
+            command=lambda it=item: self._handle_card_preview(it),
+        )
+        card_preview_btn.pack(side="left", padx=(0, 6))
+
+        card_download_btn = ctk.CTkButton(
+            card_actions,
+            text="⬇ Download",
+            font=Theme.FONT_CAPTION,
+            width=88,
+            height=30,
+            fg_color=Theme.PRIMARY,
+            hover_color=Theme.PRIMARY_HOVER,
+            command=lambda it=item: self._handle_card_download(it),
+        )
+        card_download_btn.pack(side="left", padx=(0, 6))
+
         select_btn = ctk.CTkButton(
-            card,
+            card_actions,
             text="Select",
             font=Theme.FONT_CAPTION,
-            width=70,
+            width=65,
             height=30,
             fg_color=Theme.BG_CARD_HOVER,
             hover_color=Theme.PRIMARY,
             command=lambda it=item: self._select_track(it),
         )
-        select_btn.grid(row=0, column=2, rowspan=2, padx=12, pady=10)
+        select_btn.pack(side="left")
 
         # Dynamic wraplength on card resize
         def _on_card_resized(event, t=title_lbl, m=meta_lbl):
             w = event.width
             if w > 1 and t.winfo_exists():
-                avail = max(160, w - 190)
+                avail = max(140, w - 340)
                 t.configure(wraplength=avail)
                 if m.winfo_exists():
                     m.configure(wraplength=avail)
 
         card.bind("<Configure>", _on_card_resized)
+
+    def _handle_card_preview(self, item: MediaItem):
+        """Immediately selects track and starts 30s preview playback."""
+        self._select_track(item)
+        self._handle_play_preview()
+
+    def _handle_card_download(self, item: MediaItem):
+        """Immediately selects track and initiates MP3 download."""
+        self._select_track(item)
+        self._handle_start_download()
 
     def _select_track(self, item: MediaItem):
         self._selected_item = item
@@ -388,6 +426,8 @@ class SpotifyPage(BasePlatformPage):
 
         self.status_msg.configure(text=f"Starting MP3 download ({bitrate_str} kbps)...")
         self.progress_bar.set(0.0)
+        if self.progress_frame.winfo_exists():
+            self.progress_frame.grid()
 
         self.app._handle_start_download(
             result=self._selected_item,
@@ -397,6 +437,8 @@ class SpotifyPage(BasePlatformPage):
         )
 
     def update_progress(self, prog: ProgressInfo):
+        if self.progress_frame.winfo_exists() and not self.progress_frame.winfo_ismapped():
+            self.progress_frame.grid()
         if self.progress_bar.winfo_exists():
             self.progress_bar.set(prog.percent / 100.0)
         if self.status_msg.winfo_exists():
