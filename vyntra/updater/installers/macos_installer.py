@@ -45,7 +45,12 @@ DMG="{staged_file}"
 BACKUP="${{TARGET}}.bak"
 
 echo "[Vyntra Updater] Waiting for PID $PID to terminate..."
+WAIT_COUNT=0
 while kill -0 "$PID" 2>/dev/null; do
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+    if [ "$WAIT_COUNT" -gt 6 ]; then
+        kill -9 "$PID" 2>/dev/null || true
+    fi
     sleep 1
 done
 sleep 1
@@ -113,4 +118,11 @@ fi
             raise RuntimeError(f"Could not spawn update process: {e}") from e
 
         logger.info("[Updater] Terminating Vyntra instance for replacement.")
-        sys.exit(0)
+        import logging
+        logging.shutdown()
+        import time
+        time.sleep(0.5)
+
+        # os._exit terminates the entire process immediately, releasing locks on the application bundle
+        # even when called from a secondary worker thread
+        os._exit(0)

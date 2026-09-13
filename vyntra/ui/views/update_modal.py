@@ -190,7 +190,11 @@ class UpdateModal(ctk.CTkToplevel):
             self.progress_bar.set(prog.percent / 100.0)
             if prog.is_complete:
                 self.status_label.configure(text=prog.status_text, text_color=Theme.SUCCESS)
-                self.update_btn.configure(text="Installing...")
+                if "skipped" in prog.status_text.lower():
+                    self.update_btn.configure(state="normal", text="Up to Date")
+                    self.later_btn.configure(state="normal", text="Close")
+                else:
+                    self.update_btn.configure(text="Installing...")
             else:
                 speed_str = f" | {prog.speed_mbps:.1f} MB/s" if prog.speed_mbps > 0 else ""
                 self.status_label.configure(

@@ -88,22 +88,34 @@ def select_platform_asset(assets: List[ReleaseAsset]) -> Optional[ReleaseAsset]:
     ]
 
     if current_os == PLATFORM_WINDOWS:
-        # Preferred patterns for Windows
-        # 1. Architecture specific: Vyntra-Windows-x64.exe
-        # 2. General windows: Vyntra-Windows.exe, Vyntra.exe
+        # Preferred patterns for Windows:
+        # 1. Architecture-specific standalone executable: Vyntra-Windows-x64.exe
         for a in bin_assets:
             nl = a.name.lower()
-            if (nl.endswith(".exe") or nl.endswith(".zip")) and "windows" in nl and current_arch in nl:
+            if nl.endswith(".exe") and "windows" in nl and current_arch in nl:
                 return a
 
+        # 2. General windows standalone executable: Vyntra-Windows.exe
         for a in bin_assets:
             nl = a.name.lower()
-            if (nl.endswith(".exe") or nl.endswith(".zip")) and "windows" in nl:
+            if nl.endswith(".exe") and "windows" in nl:
                 return a
 
+        # 3. Any .exe with vyntra in name: Vyntra.exe
         for a in bin_assets:
             nl = a.name.lower()
             if nl.endswith(".exe") and "vyntra" in nl:
+                return a
+
+        # 4. Fallback to archive only if no standalone executable exists
+        for a in bin_assets:
+            nl = a.name.lower()
+            if nl.endswith(".zip") and "windows" in nl and current_arch in nl:
+                return a
+
+        for a in bin_assets:
+            nl = a.name.lower()
+            if nl.endswith(".zip") and "windows" in nl:
                 return a
 
     elif current_os == PLATFORM_MACOS:
