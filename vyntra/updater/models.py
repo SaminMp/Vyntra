@@ -7,9 +7,6 @@ from typing import Dict, List, Optional
 
 
 
-
-
-
 @dataclass
 class ReleaseAsset:
     """Represents a downloadable binary or metadata asset attached to a GitHub Release."""
