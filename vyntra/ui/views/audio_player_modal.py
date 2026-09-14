@@ -12,7 +12,7 @@ Designed strictly for audio-only playback:
 
 import threading
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 import customtkinter as ctk
 
 from vyntra.models import MediaItem
