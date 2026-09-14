@@ -778,14 +778,64 @@ class StreamService:
     def prepare_video_for_playback(
         self,
         result: SearchResult,
-        on_ready: Callable[[str, int], None],
+        on_ready: Callable[[Any, int], None],
         on_error: Callable[[Exception], None],
     ) -> None:
         """
-        Prepares video media for playback using the centralized YouTubeService.
-        Calls on_ready(local_file_path, duration) when ready, or on_error(exception) on failure.
+        Prepares video media for playback using platform-specific services or centralized YouTubeService.
+        Calls on_ready(payload, duration) when ready, or on_error(exception) on failure.
         """
-        youtube_service.prepare_playback_stream(result, on_ready, on_error)
+        platform_id = getattr(result, "platform", "") or "youtube"
+        if platform_id == "instagram":
+            def _extract_ig():
+                try:
+                    import threading
+                    from vyntra.platforms.registry import platform_registry
+                    from vyntra.models import StreamPayload
+                    plat = platform_registry.get("instagram")
+                    if not plat:
+                        from vyntra.platforms.instagram.service import instagram_platform
+                        plat = instagram_platform
+                    info = plat.prepare_playback_stream(result)
+                    payload = StreamPayload(
+                        video_url=info["url"],
+                        audio_url=info["url"],
+                        http_headers=info.get("headers", {}),
+                    )
+                    on_ready(payload, result.duration_seconds or 0)
+                except Exception as err:
+                    logger.error("[StreamService] Instagram stream preparation failed: %s", err)
+                    on_error(err)
+
+            import threading
+            threading.Thread(target=_extract_ig, daemon=True, name="InstagramPlaybackResolver").start()
+
+        elif platform_id == "tiktok":
+            def _extract_tt():
+                try:
+                    import threading
+                    from vyntra.platforms.registry import platform_registry
+                    from vyntra.models import StreamPayload
+                    plat = platform_registry.get("tiktok")
+                    if not plat:
+                        from vyntra.platforms.tiktok.service import tiktok_platform
+                        plat = tiktok_platform
+                    info = plat.prepare_playback_stream(result)
+                    payload = StreamPayload(
+                        video_url=info["url"],
+                        audio_url=info["url"],
+                        http_headers=info.get("headers", {}),
+                    )
+                    on_ready(payload, result.duration_seconds or 0)
+                except Exception as err:
+                    logger.error("[StreamService] TikTok stream preparation failed: %s", err)
+                    on_error(err)
+
+            import threading
+            threading.Thread(target=_extract_tt, daemon=True, name="TikTokPlaybackResolver").start()
+
+        else:
+            youtube_service.prepare_playback_stream(result, on_ready, on_error)
 
     def stop_playback(self) -> None:
         """Terminates active FFmpeg stream processes."""

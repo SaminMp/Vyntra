@@ -123,9 +123,12 @@ class SetupWizard(ctk.CTkToplevel):
         info_box.pack(fill="x", pady=(6, 14))
 
         info_text = (
-            "Connect your YouTube account to search, stream, and download high-quality media.\n\n"
-            "🔒 Official Sign-In: You authenticate directly through Google. "
-            "Your password is never entered or stored in Vyntra."
+            "Google sign-in is required to authorize YouTube access for streaming video, "
+            "format extraction, and downloads.\n\n"
+            "🛡️ Privacy & Security Guarantee:\n"
+            "• Vyntra does NOT store, collect, or share your personal data or password.\n"
+            "• You authenticate directly through official Google OAuth 2.0.\n"
+            "• Credentials are stored exclusively in your local device OS Keyring."
         )
         info_lbl = ctk.CTkLabel(
             info_box,
@@ -171,29 +174,18 @@ class SetupWizard(ctk.CTkToplevel):
         nav_row = ctk.CTkFrame(self.main_container, fg_color="transparent")
         nav_row.pack(side="bottom", fill="x")
 
-        guest_btn = ctk.CTkButton(
-            nav_row,
-            text="Continue as Guest",
-            font=Theme.FONT_BODY,
-            height=38,
-            corner_radius=Theme.RADIUS_BUTTON,
-            fg_color=Theme.BG_MUTED,
-            hover_color=Theme.BG_CARD_HOVER,
-            command=lambda: self._show_step(3),
-        )
-        guest_btn.pack(side="left")
-
-        continue_btn = ctk.CTkButton(
+        self.continue_btn = ctk.CTkButton(
             nav_row,
             text="Continue  →",
             font=Theme.FONT_SUBHEADER,
             height=38,
             corner_radius=Theme.RADIUS_BUTTON,
-            fg_color=Theme.PRIMARY,
-            hover_color=Theme.PRIMARY_HOVER,
+            fg_color=Theme.PRIMARY if status_key == "connected" else Theme.BG_MUTED,
+            hover_color=Theme.PRIMARY_HOVER if status_key == "connected" else Theme.BG_CARD_HOVER,
+            state="normal" if status_key == "connected" else "disabled",
             command=lambda: self._show_step(3),
         )
-        continue_btn.pack(side="right")
+        self.continue_btn.pack(side="right")
 
     def _handle_signin(self):
         self.signin_btn.configure(state="disabled", text="Opening Google Sign-In...")
@@ -207,10 +199,24 @@ class SetupWizard(ctk.CTkToplevel):
     def _on_signin_finished(self, success: bool, msg: str):
         self.signin_btn.configure(state="normal", text="🌐 Sign in with Google")
         status_key, label, _ = auth_service.get_connection_status()
+        is_connected = (status_key == "connected")
         self.status_label.configure(
             text=f"Status: {label}",
-            text_color=Theme.SUCCESS if success else Theme.TEXT_MUTED,
+            text_color=Theme.SUCCESS if is_connected else Theme.ERROR,
         )
+        if hasattr(self, "continue_btn") and self.continue_btn.winfo_exists():
+            if is_connected:
+                self.continue_btn.configure(
+                    state="normal",
+                    fg_color=Theme.PRIMARY,
+                    hover_color=Theme.PRIMARY_HOVER,
+                )
+            else:
+                self.continue_btn.configure(
+                    state="disabled",
+                    fg_color=Theme.BG_MUTED,
+                    hover_color=Theme.BG_CARD_HOVER,
+                )
 
     # --- STEP 3: PREFERENCES ---
     def _render_step_preferences(self):

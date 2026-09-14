@@ -124,11 +124,10 @@ class AccountModal(ctk.CTkToplevel):
         sec_lbl = ctk.CTkLabel(
             sec_box,
             text=(
-                "🔒 Google Identity & YouTube Media Architecture:\n"
-                "• Google OAuth authenticates your identity, profile, and playlists.\n"
-                "• Vyntra NEVER sees, captures, or stores your Google password.\n"
-                "• Media extraction (playback/downloads) is powered by Innertube media sessions "
-                "configured in Settings ⚙️ -> Media Access."
+                "🔒 Google Identity & Privacy Architecture:\n"
+                "• Sign-in is required to authorize YouTube access for streaming and downloading.\n"
+                "• Vyntra does NOT store, collect, or share your personal data or passwords.\n"
+                "• Credentials are authenticated via Google OAuth 2.0 and kept securely in your local OS keyring."
             ),
             font=Theme.FONT_CAPTION,
             text_color=Theme.TEXT_MUTED,
@@ -228,11 +227,9 @@ class AccountModal(ctk.CTkToplevel):
 
     def _handle_signout(self):
         auth_service.disconnect()
-        status_key, label, details = auth_service.get_connection_status()
-        self.status_title.configure(text=label, text_color=Theme.TEXT_MUTED)
-        self.status_msg.configure(text=details)
         if self.on_changed:
             self.on_changed()
+        self.destroy()
 
     def _handle_test(self):
         self.test_btn.configure(state="disabled", text="Testing...")

@@ -38,7 +38,7 @@ def get_release_tag_and_name():
         print(f"[Release] Using explicit git tag: {tag_name}")
     else:
         import vyntra
-        base_version = getattr(vyntra, "__version__", "1.2.0").strip()
+        base_version = getattr(vyntra, "__version__", "1.2.1").strip()
         print(f"[Release] Base version from vyntra/__init__.py: {base_version}")
 
         # Query all existing tags

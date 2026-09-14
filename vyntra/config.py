@@ -66,8 +66,6 @@ class AppConfig:
     # Multi-platform settings
     instagram_custom_cookie_path: str = ""
     tiktok_custom_cookie_path: str = ""
-    spotify_client_id: str = ""
-    spotify_client_secret: str = ""
 
     def __post_init__(self):
         if not self.download_directory:

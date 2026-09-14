@@ -30,6 +30,18 @@ from vyntra.services.ffmpeg_service import ffmpeg_service
 from vyntra.utils.filename import sanitize_filename
 from vyntra.utils.logger import logger
 
+# Ensure SSL certificates work in PyInstaller-bundled builds:
+# Set SSL_CERT_FILE to certifi's CA bundle if the system bundle is inaccessible.
+_ssl_fallback_needed = False
+try:
+    import certifi
+    _cert_file = certifi.where()
+    if _cert_file and os.path.isfile(_cert_file):
+        os.environ.setdefault("SSL_CERT_FILE", _cert_file)
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", _cert_file)
+except ImportError:
+    _ssl_fallback_needed = True
+
 
 class StreamPayload(str):
     """
@@ -211,7 +223,6 @@ class YouTubeService:
         ydl_opts: Dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
-            "nocheckcertificate": True,
             "socket_timeout": 15 if purpose == "download" else 10,
             "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)",
             "extractor_args": {
@@ -220,6 +231,12 @@ class YouTubeService:
                 }
             },
         }
+
+        # Only disable certificate checking as a last resort when certifi CA bundle
+        # is unavailable (e.g., some PyInstaller builds without certifi).
+        if _ssl_fallback_needed:
+            logger.debug("[YouTube] certifi unavailable — falling back to nocheckcertificate")
+            ydl_opts["nocheckcertificate"] = True
 
         # 1. Attach Node.js runtime and EJS remote challenge solver if available
         node_path = self.get_node_path()
@@ -266,21 +283,43 @@ class YouTubeService:
     # ----------------------------------------------------------------------
     # 5. Error Classification & Media Access Testing
     # ----------------------------------------------------------------------
-
     def classify_error(self, err: Exception) -> str:
         """Classifies YouTube extraction exceptions into clear, actionable human categories."""
         raw = str(err).strip()
+        norm = raw.replace("’", "'").replace("`", "'")
 
         if "Failed to decrypt with DPAPI" in raw or "10927" in raw:
             return (
                 "Selected browser uses Windows App-Bound encryption which blocks external access. "
                 "Please select Firefox in Settings or export a session cookie file."
             )
-        if "Sign in to confirm you’re not a bot" in raw or "confirm you're not a bot" in raw or "LOGIN_REQUIRED" in raw:
+        if "not a bot" in norm.lower() or "login_required" in norm.lower():
+            # Check if user is already signed in to Google OAuth to avoid confusing
+            # "sign in" prompts. Google OAuth != YouTube media session cookies.
+            if self.is_google_oauth_connected():
+                return (
+                    "YouTube requires browser session verification for this video. "
+                    "Your Google account is connected, but YouTube media access needs browser cookies. "
+                    "Go to Settings → configure a browser session (Firefox recommended) or provide a cookies.txt file."
+                )
             return (
                 "YouTube requires sign-in verification for this video. "
-                "Please sign in with your Google account in Settings."
+                "Please sign in with your Google account in Settings, or configure browser cookies."
             )
+        if "WRONG_VERSION_NUMBER" in raw or "wrong version number" in raw:
+            return (
+                "Unable to connect to the media service due to a TLS/SSL protocol error. "
+                "This usually indicates a proxy or VPN protocol mismatch (e.g. an HTTP proxy handling HTTPS traffic). "
+                "Please check your internet connection or proxy/VPN settings."
+            )
+        if "CERTIFICATE_VERIFY_FAILED" in raw or "certificate verify failed" in raw:
+            return (
+                "SSL certificate verification failed. Please check your system clock "
+                "and ensure security software/proxy is not intercepting encrypted traffic."
+            )
+        if "UNEXPECTED_EOF_WHILE_READING" in raw:
+            return "Connection closed unexpectedly during TLS handshake. Please verify your proxy or VPN tunnel."
+
         if "Private video" in raw:
             return "This video is private and cannot be accessed."
         if "This video is unavailable" in raw or "Video unavailable" in raw:
@@ -331,10 +370,17 @@ class YouTubeService:
                 config_manager.update(youtube_media_status="failed", youtube_media_status_message=msg)
                 return (False, f"⚠️ {msg}")
             elif "Sign in to confirm you’re not a bot" in err_str or "confirm you're not a bot" in err_str:
-                msg = (
-                    "YouTube requires sign-in verification. "
-                    "Please sign in with your Google account in Settings."
-                )
+                if self.is_google_oauth_connected():
+                    msg = (
+                        "YouTube requires browser session verification. "
+                        "Your Google account is connected, but YouTube media access needs browser cookies. "
+                        "Please configure browser cookies in Settings."
+                    )
+                else:
+                    msg = (
+                        "YouTube requires sign-in verification. "
+                        "Please sign in with your Google account in Settings, or configure browser cookies."
+                    )
                 config_manager.update(youtube_media_status="failed", youtube_media_status_message=msg)
                 return (False, f"⚠️ {msg}")
             else:
@@ -578,19 +624,52 @@ class YouTubeService:
                     if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url")
                 ]
 
-                # 2. Select best video stream <= 720p (for fast smooth playback)
+                # 2. Select optimal video stream <= 720p (preferring H.264/AVC for hardware-efficient decoding)
+                def _score_preview_format(f: dict) -> Tuple[int, int, int]:
+                    vcodec = str(f.get("vcodec") or "").lower()
+                    w = f.get("width") or 0
+                    h = f.get("height") or 0
+                    fps = float(f.get("fps") or 30.0)
+
+                    # For standard video, bound height <= 720; for vertical videos (Shorts/Reels), bound min dimension <= 720
+                    min_dim = min(w, h) if (w and h) else h
+                    if min_dim <= 0 or min_dim > 720:
+                        return (-1, 0, 0)
+
+                    # Codec preference:
+                    # 3 = H.264 / AVC (avc1) -> SIMD/hardware-accelerated, lightweight decode
+                    # 2 = VP9 (vp9, vp09) -> moderate CPU
+                    # 1 = AV1 (av01) -> computationally heavy software decoding
+                    if "avc1" in vcodec or "h264" in vcodec:
+                        codec_score = 3
+                    elif "vp9" in vcodec or "vp09" in vcodec:
+                        codec_score = 2
+                    elif "av01" in vcodec or "av1" in vcodec:
+                        codec_score = 1
+                    else:
+                        codec_score = 0
+
+                    # Prefer <= 30 fps for preview to prevent saturating the UI render thread
+                    fps_score = 1 if fps <= 30.0 else 0
+                    return (codec_score, h, fps_score)
+
+                valid_video_formats = [f for f in formats if f.get("vcodec") != "none" and f.get("url")]
                 v_stream = None
-                best_h = 0
-                for f in formats:
-                    if f.get("vcodec") != "none" and f.get("url"):
-                        h = f.get("height") or 0
-                        if 0 < h <= 720 and h >= best_h:
-                            best_h = h
-                            v_stream = f
-                if not v_stream:
-                    video_only = [f for f in formats if f.get("vcodec") != "none" and f.get("url")]
-                    if video_only:
-                        v_stream = video_only[0]
+                if valid_video_formats:
+                    candidate = max(valid_video_formats, key=_score_preview_format)
+                    if _score_preview_format(candidate)[0] >= 0:
+                        v_stream = candidate
+                    else:
+                        v_stream = valid_video_formats[0]
+
+                if v_stream:
+                    logger.info(
+                        "[Playback] Selected video format: %s (%dp, %s, %.1ffps)",
+                        v_stream.get("format_id"),
+                        v_stream.get("height") or 0,
+                        v_stream.get("vcodec"),
+                        float(v_stream.get("fps") or 30),
+                    )
 
                 # 3. Select best audio stream (m4a preferred for compatibility)
                 a_stream = None

@@ -15,6 +15,7 @@ import shutil
 
 from vyntra.updater.constants import get_updates_dir
 from vyntra.updater.installers.base import BaseInstaller
+from vyntra.updater.platform_detector import is_frozen
 from vyntra.utils.logger import logger
 
 
@@ -33,6 +34,20 @@ class WindowsInstaller(BaseInstaller):
         """
         if not staged_file.exists():
             raise FileNotFoundError(f"Staged update file not found: {staged_file}")
+
+        # Safe diagnostic reporting
+        is_frozen_app = is_frozen()
+        running_exe = str(Path(sys.executable).resolve())
+        temp_mei = getattr(sys, "_MEIPASS", "None")
+        target_str = str(target_path)
+        restart_str = str(target_path)
+
+        logger.info("[Updater] === Windows Update Diagnostics ===")
+        logger.info("[Updater] Frozen application: %s", "YES" if is_frozen_app else "NO")
+        logger.info("[Updater] Running executable: %s", running_exe)
+        logger.info("[Updater] PyInstaller temp directory: %s", temp_mei)
+        logger.info("[Updater] Update target: %s", target_str)
+        logger.info("[Updater] Restart target: %s", restart_str)
 
         if staged_file.suffix.lower() == ".zip":
             logger.info("[Updater] Staged file is a zip archive, extracting...")
@@ -79,9 +94,16 @@ class WindowsInstaller(BaseInstaller):
         ps_backup = f"{ps_target}.bak"
 
         # 1. PowerShell updater script:
-        # Handles process wait, handle release, file replacement, cleanup, and restart
-        # without console window requirements or redirection crashes.
+        # Purges _MEIPASS2 so the new PyInstaller executable will unpack cleanly,
+        # waits for process exit and OS handle release, replaces in-place, and restarts.
         ps_content = f"""param()
+# Crucial: Purge PyInstaller runtime temp environment variables so the new executable
+# does NOT attempt to reuse the deleted temp extraction directory of the old process.
+Remove-Item Env:\\_MEIPASS2 -ErrorAction SilentlyContinue
+Remove-Item Env:\\_MEIPASS -ErrorAction SilentlyContinue
+[System.Environment]::SetEnvironmentVariable('_MEIPASS2', $null, 'Process')
+[System.Environment]::SetEnvironmentVariable('_MEIPASS', $null, 'Process')
+
 $PIDToWait = {pid}
 $TargetPath = '{ps_target}'
 $NewExePath = '{ps_new}'
@@ -97,13 +119,13 @@ Log-Msg "Started update replacement. PID=$PIDToWait, TARGET=$TargetPath, NEW_EXE
 
 # Wait for calling Vyntra process to terminate
 $waitCount = 0
-while ($waitCount -lt 25) {{
+while ($waitCount -lt 30) {{
     $proc = Get-Process -Id $PIDToWait -ErrorAction SilentlyContinue
     if (-not $proc) {{
         break
     }}
     $waitCount++
-    if ($waitCount -gt 10) {{
+    if ($waitCount -gt 12) {{
         Log-Msg "Terminating unresponsive process $PIDToWait..."
         Stop-Process -Id $PIDToWait -Force -ErrorAction SilentlyContinue
     }}
@@ -111,15 +133,26 @@ while ($waitCount -lt 25) {{
 }}
 
 Log-Msg "Process $PIDToWait terminated. Waiting for OS file locks to release..."
-Start-Sleep -Seconds 1
+Start-Sleep -Seconds 3
 
 $attempts = 0
 $success = $false
 
-while ($attempts -lt 15) {{
+while ($attempts -lt 20) {{
     $attempts++
-    Log-Msg "Attempt $attempts of 15 in-place replacement..."
+    Log-Msg "Attempt $attempts of 20 in-place replacement..."
     try {{
+        # Verify file-lock is released by testing write access
+        if (Test-Path -LiteralPath $TargetPath) {{
+            try {{
+                $testStream = [System.IO.File]::Open($TargetPath, 'Open', 'ReadWrite', 'None')
+                $testStream.Close()
+            }} catch {{
+                Log-Msg "File still locked: $($_.Exception.Message). Waiting..."
+                Start-Sleep -Seconds 2
+                continue
+            }}
+        }}
         if (Test-Path -LiteralPath $BackupPath) {{
             Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue
         }}
@@ -148,12 +181,16 @@ if ($success) {{
     }}
 
     $targetDir = Split-Path -Parent $TargetPath
-    Log-Msg "Launching updated Vyntra from $TargetPath (workdir: $targetDir)..."
-    Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir
+    Log-Msg "Restart target: $TargetPath (workdir: $targetDir)..."
+    # Ensure environment is clean before starting the new PyInstaller executable
+    Remove-Item Env:\\_MEIPASS2 -ErrorAction SilentlyContinue
+    Remove-Item Env:\\_MEIPASS -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+    Start-Process -FilePath $TargetPath -WorkingDirectory $targetDir -WindowStyle Normal
     Log-Msg "Update completed successfully. Exiting."
     exit 0
 }} else {{
-    Log-Msg "ERROR: In-place replacement failed after 15 attempts. Rolling back..."
+    Log-Msg "ERROR: In-place replacement failed after 20 attempts. Rolling back..."
     if (Test-Path -LiteralPath $BackupPath) {{
         Copy-Item -LiteralPath $BackupPath -Destination $TargetPath -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue
@@ -167,11 +204,13 @@ if ($success) {{
             f.write(ps_content)
 
         # 2. Batch script wrapper and fallback:
-        # First delegates to PowerShell. If unavailable, falls back to native cmd commands
-        # using ping (never timeout, which crashes in background non-console processes).
         script_content = f"""@echo off
 setlocal enabledelayedexpansion
 title Vyntra Updater
+
+rem Cleanse PyInstaller runtime environment variables
+set "_MEIPASS2="
+set "_MEIPASS="
 
 set "PID={pid}"
 set "TARGET={target_path}"
@@ -205,13 +244,13 @@ if not errorlevel 1 (
 )
 
 echo [%DATE% %TIME%] [Vyntra Updater] Process !PID! terminated. Waiting for handle release... >> "!LOG!"
-ping 127.0.0.1 -n 3 >NUL
+ping 127.0.0.1 -n 5 >NUL
 
 echo [Vyntra Updater] Updating executable in-place...
 set /a ATTEMPTS=0
 :replace_loop
 set /a ATTEMPTS+=1
-echo [%DATE% %TIME%] [Vyntra Updater] Attempt !ATTEMPTS! of 15... >> "!LOG!"
+echo [%DATE% %TIME%] [Vyntra Updater] Attempt !ATTEMPTS! of 20... >> "!LOG!"
 
 rem Ensure any previous backup is removed
 if exist "!BACKUP!" del /f /q "!BACKUP!" >NUL 2>&1
@@ -239,7 +278,7 @@ if exist "!TARGET!" (
 )
 
 :replace_retry
-if !ATTEMPTS! leq 15 (
+if !ATTEMPTS! leq 20 (
     ping 127.0.0.1 -n 2 >NUL
     goto replace_loop
 )
@@ -254,16 +293,20 @@ if exist "!NEW_EXE!" del /f /q "!NEW_EXE!" >NUL 2>&1
 if exist "!BACKUP!" del /f /q "!BACKUP!" >NUL 2>&1
 
 echo [Vyntra Updater] Starting updated Vyntra...
+set "_MEIPASS2="
+set "_MEIPASS="
 for %%I in ("!TARGET!") do set "TARGET_DIR=%%~dpI"
 start "" /d "!TARGET_DIR!" "!TARGET!"
 echo [%DATE% %TIME%] [Vyntra Updater] Launched updated Vyntra. Exiting updater. >> "!LOG!"
 exit 0
 
 :rollback
-echo [%DATE% %TIME%] [Vyntra Updater ERROR] Replacement failed after 15 attempts. Rolling back... >> "!LOG!"
+echo [%DATE% %TIME%] [Vyntra Updater ERROR] Replacement failed after 20 attempts. Rolling back... >> "!LOG!"
 if exist "!BACKUP!" (
     copy /y "!BACKUP!" "!TARGET!" >NUL 2>&1
     del /f /q "!BACKUP!" >NUL 2>&1
+    set "_MEIPASS2="
+    set "_MEIPASS="
     for %%I in ("!TARGET!") do set "TARGET_DIR=%%~dpI"
     start "" /d "!TARGET_DIR!" "!TARGET!"
 )
@@ -275,12 +318,18 @@ exit 1
 
         logger.info("[Updater] Launching detached updater helper process...")
 
+        # Purge _MEIPASS2 and _MEIPASS from the spawned environment
+        clean_env = os.environ.copy()
+        clean_env.pop("_MEIPASS2", None)
+        clean_env.pop("_MEIPASS", None)
+
         # CREATE_NO_WINDOW = 0x08000000 ensures hidden background execution without console window flashing
         creation_flags = 0x08000000
 
         try:
             subprocess.Popen(
                 ["cmd.exe", "/c", str(updater_script)],
+                env=clean_env,
                 close_fds=True,
                 creationflags=creation_flags,
             )
@@ -306,7 +355,7 @@ exit 1
             pass
 
         import time
-        time.sleep(0.3)
+        time.sleep(0.5)
 
         # os._exit terminates the entire process immediately, releasing locks on the executable
         os._exit(0)

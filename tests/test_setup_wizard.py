@@ -44,9 +44,20 @@ class TestSetupWizard(unittest.TestCase):
         wizard._show_step(4)
         self.assertEqual(wizard._current_step, 4)
 
-        wizard._complete_setup()
-        self.assertEqual(len(completed_flags), 1)
-        self.assertTrue(config_manager.config.setup_completed)
+        wizard.destroy()
+
+    def test_signin_required_modal(self):
+        """Verify SignInRequiredModal renders privacy explanation and signin button."""
+        from vyntra.ui.views.signin_required_modal import SignInRequiredModal
+        success_called = []
+        modal = SignInRequiredModal(self.root, on_success=lambda: success_called.append(True))
+
+        self.assertIsNotNone(modal.signin_btn)
+        self.assertIsNotNone(modal.status_label)
+
+        # Trigger completion callback
+        modal._complete_success()
+        self.assertEqual(len(success_called), 1)
 
     def test_account_modal(self):
         """Verify AccountModal builds and displays connection status."""

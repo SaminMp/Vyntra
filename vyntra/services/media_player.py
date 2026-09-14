@@ -20,21 +20,34 @@ try:
 except ImportError:
     PYAV_AUDIO_AVAILABLE = False
 
+from PIL import Image
 from vyntra.utils.logger import logger
 
 
 class ImageWrapper:
-    """Wraps raw decoded RGB frame bytes with a MediaPlayer-compatible interface."""
+    """Wraps raw decoded RGB frame bytes or PIL Image with a MediaPlayer-compatible interface."""
 
-    def __init__(self, raw_bytes: bytes, size: Tuple[int, int]):
-        self._raw_bytes = raw_bytes
+    def __init__(self, raw_data: Any, size: Tuple[int, int]):
+        if isinstance(raw_data, Image.Image):
+            self._pil_img = raw_data
+            self._raw_bytes = None
+        else:
+            self._pil_img = None
+            self._raw_bytes = raw_data
         self._size = size
 
     def get_size(self) -> Tuple[int, int]:
         return self._size
 
+    def to_pil_image(self) -> Image.Image:
+        if self._pil_img is not None:
+            return self._pil_img
+        return Image.frombytes("RGB", self._size, self._raw_bytes)
+
     def to_bytearray(self) -> List[bytes]:
-        return [self._raw_bytes]
+        if self._raw_bytes is not None:
+            return [self._raw_bytes]
+        return [self._pil_img.tobytes()]
 
 
 class SynchronizedMediaPlayer:
@@ -113,19 +126,26 @@ class SynchronizedMediaPlayer:
         self._audio_channels: int = 2
         self._audio_stream_active: bool = False
         self._audio_device_stream: Optional[Any] = None
+        self._eof_reached: bool = False
 
         # Fallback clock for video-only media or systems without audio devices
         self._fallback_start_time: float = time.monotonic()
         self._fallback_pause_time: float = 0.0
 
-        # Threading and queues
-        self._audio_queue: queue.Queue = queue.Queue(maxsize=60)
-        self._video_queue: queue.Queue = queue.Queue(maxsize=20)
+        # Threading and queues (generous buffers to absorb network jitter)
+        self._audio_queue: queue.Queue = queue.Queue(maxsize=200)
+        self._video_queue: queue.Queue = queue.Queue(maxsize=40)
         self._current_audio_chunk: List[Any] = [b"", 0]
         self._current_video_frame: Optional[Tuple[Any, float]] = None
 
         self._audio_thread: Optional[threading.Thread] = None
         self._video_thread: Optional[threading.Thread] = None
+
+        # Thread-safe demuxer synchronization (prevents C-level segfaults when seeking while demuxing)
+        self._demux_v_lock = threading.Lock()
+        self._demux_a_lock = threading.Lock()
+        self._v_demux_iter: Optional[Any] = None
+        self._a_demux_iter: Optional[Any] = None
 
         # Diagnostic telemetry
         self._last_diag_time: float = 0.0
@@ -133,6 +153,8 @@ class SynchronizedMediaPlayer:
         self._a_codec_name = "none"
         self._v_start_time: float = 0.0
         self._a_start_time: float = 0.0
+        self._rendered_frames_count: int = 0
+        self._dropped_frames_count: int = 0
 
         logger.info("[Player] Initializing SynchronizedMediaPlayer")
         self._start_pipeline(start_pts=0.0)
@@ -152,22 +174,35 @@ class SynchronizedMediaPlayer:
                 return
 
             try:
-                # 1. Open video container
-                self._container_v = av.open(self.video_url, options=self._av_options)
-                if self._container_v.streams.video:
-                    self._v_stream = self._container_v.streams.video[0]
-                    self._v_time_base = float(self._v_stream.time_base)
-                    self.width = self._v_stream.width or 640
-                    self.height = self._v_stream.height or 360
-                    self.fps = float(self._v_stream.average_rate or 30.0)
-                    self._v_codec_name = self._v_stream.codec_context.name or "video"
-                    if self._v_stream.start_time is not None:
-                        self._v_start_time = float(self._v_stream.start_time * self._v_time_base)
+                # 1. Open video container (only when a non-empty video URL is provided)
+                if self.video_url and self.video_url.strip():
+                    self._container_v = av.open(self.video_url, options=self._av_options)
+                    if self._container_v.streams.video:
+                        self._v_stream = self._container_v.streams.video[0]
+                        # Configure optimal multi-threaded hardware/CPU decoding
+                        try:
+                            self._v_stream.codec_context.thread_count = 0  # Auto-detect core count
+                            self._v_stream.codec_context.thread_type = "AUTO"  # Frame and slice threading
+                        except Exception:
+                            pass
+                        self._v_time_base = float(self._v_stream.time_base)
+                        self.width = self._v_stream.width or 640
+                        self.height = self._v_stream.height or 360
+                        self.fps = float(self._v_stream.average_rate or 30.0)
+                        self._v_codec_name = self._v_stream.codec_context.name or "video"
+                        if self._v_stream.start_time is not None:
+                            self._v_start_time = float(self._v_stream.start_time * self._v_time_base)
+                        self._v_demux_iter = self._container_v.demux(self._v_stream)
+                else:
+                    self._container_v = None
+                    self._v_stream = None
+                    self._v_demux_iter = None
 
-                # 2. Open audio container (if same file, reuse; if separate DASH stream, open separate)
-                if self.audio_url and self.audio_url == self.video_url:
-                    self._container_a = self._container_v
-                elif self.audio_url:
+                # 2. Open audio container — ALWAYS open a separate container for audio
+                # even when audio_url == video_url, to prevent two decoder threads from
+                # concurrently demuxing the same av.Container (which causes packet
+                # interleaving and audio artifacts/noise).
+                if self.audio_url:
                     self._container_a = av.open(self.audio_url, options=self._av_options)
 
                 if self._container_a and self._container_a.streams.audio:
@@ -178,15 +213,25 @@ class SynchronizedMediaPlayer:
                     self._a_codec_name = self._a_stream.codec_context.name or "audio"
                     if self._a_stream.start_time is not None:
                         self._a_start_time = float(self._a_stream.start_time * self._a_time_base)
+                    self._a_demux_iter = self._container_a.demux(self._a_stream)
+
+                    # Query hardware output device default rate for bit-perfect output
+                    dev_rate = self._audio_sample_rate
+                    try:
+                        dev_info = sd.query_devices(kind='output')
+                        if dev_info and dev_info.get("default_samplerate"):
+                            dev_rate = int(dev_info["default_samplerate"])
+                    except Exception:
+                        pass
+                    self._device_sample_rate = dev_rate
+                else:
+                    self._device_sample_rate = 44100
 
                 # 3. Seek if starting at non-zero PTS
                 if start_pts > 0:
                     self._seek_containers_internal(start_pts)
 
-                # 4. Start audio output hardware stream
-                self._init_audio_hardware()
-
-                # 5. Start decoder background workers
+                # 4. Start decoder background workers FIRST so streams can pre-buffer
                 if self._a_stream:
                     self._audio_thread = threading.Thread(target=self._audio_decoder_loop, daemon=True)
                     self._audio_thread.start()
@@ -194,6 +239,19 @@ class SynchronizedMediaPlayer:
                 if self._v_stream:
                     self._video_thread = threading.Thread(target=self._video_decoder_loop, daemon=True)
                     self._video_thread.start()
+
+                # Pre-buffer: wait for audio and video queues to build an initial buffer to avoid startup underruns
+                prebuf_deadline = time.monotonic() + 0.8
+                while time.monotonic() < prebuf_deadline and not self._is_closed:
+                    a_ready = (not self._a_stream) or (self._audio_queue.qsize() >= 12)
+                    v_ready = (not self._v_stream) or (self._video_queue.qsize() >= 4)
+                    if a_ready and v_ready:
+                        break
+                    time.sleep(0.015)
+
+                # 5. Start audio output hardware stream
+                self._fallback_start_time = time.monotonic() - start_pts
+                self._init_audio_hardware()
 
                 if self.diagnostic_mode:
                     self._log_diagnostics(force=True)
@@ -233,6 +291,13 @@ class SynchronizedMediaPlayer:
 
                     available = len(raw_b) - offset
                     take = min(needed_bytes, available)
+                    # Ensure take is aligned to sample boundaries (stereo 16-bit = 4 bytes per sample)
+                    sample_align = self._audio_channels * 2
+                    take = (take // sample_align) * sample_align
+                    if take == 0:
+                        # Remaining bytes in chunk don't form a complete sample; discard
+                        self._current_audio_chunk = [b"", 0]
+                        continue
 
                     if vol == 1.0:
                         outdata[written:written + take] = raw_b[offset:offset + take]
@@ -247,14 +312,15 @@ class SynchronizedMediaPlayer:
                     self._current_audio_chunk[1] = offset
                     written += take
                     needed_bytes -= take
-                    self._master_audio_pts += (take / bytes_per_sample) / self._audio_sample_rate
+                    self._master_audio_pts += (take / bytes_per_sample) / getattr(self, "_device_sample_rate", self._audio_sample_rate)
 
             if written < len(outdata):
                 outdata[written:] = b"\x00" * (len(outdata) - written)
 
         try:
+            target_sr = getattr(self, "_device_sample_rate", self._audio_sample_rate)
             self._audio_device_stream = sd.RawOutputStream(
-                samplerate=self._audio_sample_rate,
+                samplerate=target_sr,
                 channels=self._audio_channels,
                 dtype="int16",
                 callback=_audio_callback,
@@ -273,23 +339,47 @@ class SynchronizedMediaPlayer:
             return
 
         try:
+            target_sr = getattr(self, "_device_sample_rate", self._audio_sample_rate)
             resampler = av.AudioResampler(
                 format="s16",
                 layout="stereo",
-                rate=self._audio_sample_rate,
+                rate=target_sr,
             )
-            for packet in self._container_a.demux(self._a_stream):
-                if self._is_closed:
-                    break
-                for frame in packet.decode():
-                    if self._is_closed:
+            bytes_per_sample = self._audio_channels * 2
+
+            while not self._is_closed:
+                if self._is_seeking:
+                    time.sleep(0.01)
+                    continue
+
+                with self._demux_a_lock:
+                    if self._is_closed or self._is_seeking:
+                        continue
+                    try:
+                        packet = next(self._a_demux_iter)
+                    except (StopIteration, TypeError):
+                        break
+                    except Exception as demux_err:
+                        if not self._is_closed:
+                            logger.debug("[Player] Audio demux note: %s", demux_err)
+                        break
+
+                frames = list(packet.decode())
+                if not frames:
+                    time.sleep(0.002)
+                    continue
+
+                for frame in frames:
+                    if self._is_closed or self._is_seeking:
                         break
                     for resampled_frame in resampler.resample(frame):
-                        raw_pcm = bytes(resampled_frame.planes[0])
+                        # Truncate to exact valid sample bytes, discarding FFmpeg internal memory alignment padding
+                        valid_bytes = resampled_frame.samples * bytes_per_sample
+                        raw_pcm = bytes(resampled_frame.planes[0])[:valid_bytes]
                         pts = float(frame.pts * self._a_time_base) if frame.pts is not None else self._master_audio_pts
                         while not self._is_closed and not self._is_seeking:
                             try:
-                                self._audio_queue.put((raw_pcm, pts), timeout=0.1)
+                                self._audio_queue.put((raw_pcm, pts), timeout=0.05)
                                 break
                             except queue.Full:
                                 continue
@@ -303,17 +393,36 @@ class SynchronizedMediaPlayer:
             return
 
         try:
-            for packet in self._container_v.demux(self._v_stream):
-                if self._is_closed:
-                    break
-                for frame in packet.decode():
-                    if self._is_closed:
+            while not self._is_closed:
+                if self._is_seeking:
+                    time.sleep(0.01)
+                    continue
+
+                with self._demux_v_lock:
+                    if self._is_closed or self._is_seeking:
+                        continue
+                    try:
+                        packet = next(self._v_demux_iter)
+                    except (StopIteration, TypeError):
+                        break
+                    except Exception as demux_err:
+                        if not self._is_closed:
+                            logger.debug("[Player] Video demux note: %s", demux_err)
+                        break
+
+                frames = list(packet.decode())
+                if not frames:
+                    time.sleep(0.002)
+                    continue
+
+                for frame in frames:
+                    if self._is_closed or self._is_seeking:
                         break
                     pts = float(frame.pts * self._v_time_base) if frame.pts is not None else self._last_video_pts
 
                     while not self._is_closed and not self._is_seeking:
                         try:
-                            self._video_queue.put((frame, pts), timeout=0.1)
+                            self._video_queue.put((frame, pts), timeout=0.05)
                             break
                         except queue.Full:
                             continue
@@ -326,11 +435,16 @@ class SynchronizedMediaPlayer:
             if not self._is_closed:
                 logger.debug("[Player] Video decoder reached end: %s", e)
 
-    def get_frame(self) -> Tuple[Optional[Tuple[ImageWrapper, float]], Optional[Union[str, float]]]:
+    def get_frame(
+        self,
+        target_w: Optional[int] = None,
+        target_h: Optional[int] = None,
+    ) -> Tuple[Optional[Tuple[ImageWrapper, float]], Optional[Union[str, float]]]:
         """
         Retrieves the next video frame paced strictly against the master audio clock.
+        Converts and scales directly using SIMD reformat to target dimensions.
         Returns:
-            ((ImageWrapper, pts), delay_or_none) or (None, "eof") or (None, None)
+            ((ImageWrapper, pts), next_delay_ms) or (None, "eof") or (None, wait_delay_ms)
         """
         if self._is_closed:
             return None, "eof"
@@ -351,7 +465,7 @@ class SynchronizedMediaPlayer:
                 try:
                     self._current_video_frame = self._video_queue.get_nowait()
                 except queue.Empty:
-                    return None, None
+                    return None, 16.0
 
             av_frame, pts_or_eof = self._current_video_frame
             if pts_or_eof == "eof":
@@ -360,8 +474,9 @@ class SynchronizedMediaPlayer:
 
             v_pts = float(pts_or_eof)
 
-            # 1. Stale frame check: If video is late by more than 60ms, drop and advance
-            if v_pts < (clock - 0.060):
+            # 1. Stale frame check: If video is late by more than 80ms, drop and advance
+            if v_pts < (clock - 0.080):
+                self._dropped_frames_count += 1
                 self._last_video_pts = v_pts
                 self._current_video_frame = None
                 continue
@@ -369,20 +484,43 @@ class SynchronizedMediaPlayer:
             # 2. Synchronized frame presentation: If frame is within presentation window
             # (within 35ms or slightly ahead/behind display tick)
             if v_pts <= (clock + 0.035):
+                self._rendered_frames_count += 1
                 self._last_video_pts = v_pts
                 self._current_video_frame = None
 
                 if self.diagnostic_mode:
                     self._log_diagnostics()
 
-                # Convert ONLY displayed frame to RGB24 bytes
-                rgb_frame = av_frame.to_rgb()
-                raw_rgb = rgb_frame.to_ndarray().tobytes()
-                img_wrapper = ImageWrapper(raw_rgb, (self.width, self.height))
-                return (img_wrapper, v_pts), None
+                # Fast SIMD hardware/C conversion and scaling via FFmpeg libswscale
+                out_w = int(target_w) if (target_w and target_w > 0) else self.width
+                out_h = int(target_h) if (target_h and target_h > 0) else self.height
 
-            # 3. Future frame: Video is ahead of master clock, wait for next tick
-            return None, None
+                if out_w != av_frame.width or out_h != av_frame.height:
+                    rgb_frame = av_frame.reformat(width=out_w, height=out_h, format="rgb24")
+                else:
+                    rgb_frame = av_frame.reformat(format="rgb24")
+
+                arr = rgb_frame.to_ndarray()
+                pil_img = Image.fromarray(arr)
+                img_wrapper = ImageWrapper(pil_img, (out_w, out_h))
+
+                # Compute precise delay until NEXT frame timestamp
+                delay_ms = 16.0
+                if not self._video_queue.empty():
+                    try:
+                        next_item = self._video_queue.queue[0]
+                        if next_item and next_item[1] != "eof":
+                            next_pts = float(next_item[1])
+                            diff = next_pts - clock
+                            delay_ms = max(4.0, min(40.0, diff * 1000.0))
+                    except Exception:
+                        pass
+
+                return (img_wrapper, v_pts), delay_ms
+
+            # 3. Future frame: Video is ahead of master clock; wait for due time
+            wait_ms = max(4.0, min(40.0, (v_pts - clock) * 1000.0))
+            return None, wait_ms
 
         return None, None
 
@@ -394,6 +532,10 @@ class SynchronizedMediaPlayer:
             return max(0.0, self._fallback_pause_time - self._fallback_start_time)
         else:
             return max(0.0, time.monotonic() - self._fallback_start_time)
+
+    def is_eof(self) -> bool:
+        """Returns True if the media stream has signaled EOF."""
+        return self._eof_reached
 
     def set_pause(self, paused: bool):
         """Pauses or resumes the entire synchronized session simultaneously."""
@@ -466,20 +608,24 @@ class SynchronizedMediaPlayer:
             logger.info("[Player] Seek completed at master PTS: %.2fs", target)
 
     def _seek_containers_internal(self, target_pts: float):
-        """Seeks both video and audio PyAV containers to target_pts."""
-        try:
-            if self._container_v and self._v_stream:
-                target_v_pts = int(target_pts / self._v_time_base)
-                self._container_v.seek(target_v_pts, stream=self._v_stream, backward=True)
-        except Exception as e:
-            logger.debug("[Player] Video seek note: %s", e)
+        """Seeks both video and audio PyAV containers to target_pts thread-safely."""
+        if self._container_v and self._v_stream:
+            with self._demux_v_lock:
+                try:
+                    target_v_pts = int(target_pts / self._v_time_base)
+                    self._container_v.seek(target_v_pts, stream=self._v_stream, backward=True)
+                    self._v_demux_iter = self._container_v.demux(self._v_stream)
+                except Exception as e:
+                    logger.debug("[Player] Video seek note: %s", e)
 
-        try:
-            if self._container_a and self._a_stream and self._container_a != self._container_v:
-                target_a_pts = int(target_pts / self._a_time_base)
-                self._container_a.seek(target_a_pts, stream=self._a_stream, backward=True)
-        except Exception as e:
-            logger.debug("[Player] Audio seek note: %s", e)
+        if self._container_a and self._a_stream:
+            with self._demux_a_lock:
+                try:
+                    target_a_pts = int(target_pts / self._a_time_base)
+                    self._container_a.seek(target_a_pts, stream=self._a_stream, backward=True)
+                    self._a_demux_iter = self._container_a.demux(self._a_stream)
+                except Exception as e:
+                    logger.debug("[Player] Audio seek note: %s", e)
 
     def set_volume(self, volume: float):
         """Sets playback volume smoothly from 0.0 to 1.0."""
@@ -490,11 +636,27 @@ class SynchronizedMediaPlayer:
         """Mutes or unmutes audio output."""
         self._is_muted = bool(muted)
 
+    def close(self):
+        """Alias for close_player()."""
+        self.close_player()
+
     def close_player(self):
         """Terminates workers and completely releases all media resources."""
         self._is_closed = True
         with self._lock:
             self._close_internal_pipeline()
+            while not self._video_queue.empty():
+                try:
+                    self._video_queue.get_nowait()
+                except queue.Empty:
+                    break
+            while not self._audio_queue.empty():
+                try:
+                    self._audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+            self._current_video_frame = None
+            self._current_audio_chunk = [b"", 0]
         logger.info("[Player] Synchronized media player closed and released.")
 
     def _close_internal_pipeline(self):
@@ -507,19 +669,23 @@ class SynchronizedMediaPlayer:
                 pass
             self._audio_device_stream = None
 
-        if self._container_v:
-            try:
-                self._container_v.close()
-            except Exception:
-                pass
-            self._container_v = None
+        with self._demux_v_lock:
+            if self._container_v:
+                try:
+                    self._container_v.close()
+                except Exception:
+                    pass
+                self._container_v = None
+            self._v_demux_iter = None
 
-        if self._container_a and self._container_a != self._container_v:
-            try:
-                self._container_a.close()
-            except Exception:
-                pass
-            self._container_a = None
+        with self._demux_a_lock:
+            if self._container_a:
+                try:
+                    self._container_a.close()
+                except Exception:
+                    pass
+                self._container_a = None
+            self._a_demux_iter = None
 
     def _log_diagnostics(self, force: bool = False):
         """Emits structured development diagnostic telemetry safely without exposing secrets."""
@@ -531,10 +697,15 @@ class SynchronizedMediaPlayer:
         diff_ms = (self._last_video_pts - self._master_audio_pts) * 1000.0
         buf_state = f"audio_q={self._audio_queue.qsize()}, video_q={self._video_queue.qsize()}"
         clock_type = "Hardware Audio Device Clock" if self._audio_stream_active else "Monotonic Fallback Clock"
+        dev_rate = getattr(self, "_device_sample_rate", self._audio_sample_rate)
 
         logger.info(
             "[Player] Media backend: PyAV %s / PortAudio (sounddevice)\n"
-            "[Player] Audio stream: %s (%dHz, %dch)\n"
+            "[Player] Audio codec: %s\n"
+            "[Player] Sample rate: %dHz\n"
+            "[Player] Channels: %d\n"
+            "[Player] Sample format: s16 (16-bit PCM stereo)\n"
+            "[Player] Output device rate: %dHz\n"
             "[Player] Video stream: %s (%dx%d, %.2f fps)\n"
             "[Player] Audio start time: %.3fs\n"
             "[Player] Video start time: %.3fs\n"
@@ -544,7 +715,10 @@ class SynchronizedMediaPlayer:
             "[Player] A/V difference: %+.1fms\n"
             "[Player] Buffer state: %s",
             getattr(av, "__version__", "18.1.0"),
-            self._a_codec_name, self._audio_sample_rate, self._audio_channels,
+            self._a_codec_name,
+            self._audio_sample_rate,
+            self._audio_channels,
+            dev_rate,
             self._v_codec_name, self.width, self.height, self.fps,
             self._a_start_time,
             self._v_start_time,

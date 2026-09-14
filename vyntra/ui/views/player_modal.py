@@ -9,8 +9,9 @@ from pathlib import Path
 import threading
 import time
 from typing import Callable, Optional
+import tkinter as tk
 import customtkinter as ctk
-from PIL import Image
+from PIL import Image, ImageTk
 
 from vyntra.services.media_player import SynchronizedMediaPlayer as MediaPlayer
 
@@ -34,10 +35,13 @@ class VideoPlayerModal(ctk.CTkToplevel):
         self._is_paused = False
         self._is_muted = False
         self._previous_volume = 1.0
-        self._duration = result.duration_seconds or 0
         self._is_seeking = False
         self._is_fullscreen = False
         self._is_render_loop_running = False
+        self._duration = result.duration_seconds or 0
+        self._last_ui_update_time = 0.0
+        self._session_id = 0
+        self._scheduled_render_id: Optional[str] = None
 
         self.title(f"Vyntra Player - {result.display_title}")
         self.geometry("960x640")
@@ -107,7 +111,7 @@ class VideoPlayerModal(ctk.CTkToplevel):
         self.video_container.grid_columnconfigure(0, weight=1)
         self.video_container.grid_rowconfigure(0, weight=1)
 
-        self.video_label = ctk.CTkLabel(self.video_container, text="", fg_color="#000000")
+        self.video_label = tk.Label(self.video_container, text="", bg="#000000", bd=0, highlightthickness=0)
         self.video_label.grid(row=0, column=0, sticky="nsew")
         self.video_label.bind("<Button-1>", lambda e: self._toggle_play_pause())
         self.video_label.bind("<Double-Button-1>", lambda e: self._toggle_fullscreen())
@@ -265,22 +269,26 @@ class VideoPlayerModal(ctk.CTkToplevel):
         self.time_label.configure(text=f"00:00 / {format_duration(self._duration)}")
 
         self.loading_label.configure(text="Loading video...", text_color=Theme.TEXT_MUTED)
+        self.loading_label.grid(row=0, column=0)
         self.loading_label.lift()
 
-        logger.info("[Player] Starting playback for %s", result.video_id)
+        self._session_id += 1
+        current_session = self._session_id
+
+        logger.info("[Player] Starting playback for %s (session %d)", result.video_id, current_session)
         logger.info("[Player] Extracting playable stream...")
 
         # Stop previous player if any
         self._stop_current_player()
 
         def _on_ready(file_path: str, duration: int):
-            if not self._is_closed:
+            if not self._is_closed and current_session == self._session_id:
                 logger.info("[Player] Stream extraction completed")
                 logger.info("[Player] Stream URL obtained")
-                self.after(0, lambda: self._start_playback(file_path, duration))
+                self.after(0, lambda: self._start_playback(file_path, duration, session_id=current_session))
 
         def _on_error(err: Exception):
-            if not self._is_closed:
+            if not self._is_closed and current_session == self._session_id:
                 sanitized_err = str(err)
                 logger.error("[Player] Stream extraction failed: %s", sanitized_err)
                 self.after(0, lambda: self.loading_label.configure(
@@ -293,8 +301,8 @@ class VideoPlayerModal(ctk.CTkToplevel):
             on_error=_on_error,
         )
 
-    def _start_playback(self, media_path: str, duration: int):
-        if self._is_closed:
+    def _start_playback(self, media_path: str, duration: int, session_id: int = 0):
+        if self._is_closed or (session_id != 0 and session_id != self._session_id):
             return
         if not MediaPlayer:
             logger.error("[Player] Media player backend unavailable")
@@ -333,55 +341,63 @@ class VideoPlayerModal(ctk.CTkToplevel):
             self.after(10, self._render_loop)
 
     def _render_loop(self):
-        """Continuously pulls decoded video frames and updates the UI."""
+        """Continuously pulls decoded video frames and updates the UI with exact cadence."""
         if self._is_closed or self._player is None:
             self._is_render_loop_running = False
+            self._scheduled_render_id = None
             return
 
-        frame, val = self._player.get_frame()
+        # Calculate container dimensions
+        container_w = max(320, self.video_container.winfo_width())
+        container_h = max(240, self.video_container.winfo_height())
+        orig_w = getattr(self._player, "width", 640) or 640
+        orig_h = getattr(self._player, "height", 360) or 360
 
-        if frame:
+        scale = min(container_w / orig_w, container_h / orig_h)
+        target_w = max(10, int(orig_w * scale))
+        target_h = max(10, int(orig_h * scale))
+
+        # Pull frame scaled directly via SIMD in C (taking <1ms)
+        frame_res, delay = self._player.get_frame(target_w=target_w, target_h=target_h)
+        next_delay_ms = delay if isinstance(delay, (int, float)) else 16.0
+
+        if frame_res:
             if not self._has_logged_playback_started:
                 self._has_logged_playback_started = True
                 logger.info("[Player] Playback started")
-                self.loading_label.lower()
+                self.loading_label.grid_remove()
 
-            img, pts = frame
-            w, h = img.get_size()
-            raw_bytes = bytes(img.to_bytearray()[0])
+            img_wrapper, pts = frame_res
+            if hasattr(img_wrapper, "to_pil_image"):
+                pil_img = img_wrapper.to_pil_image()
+            else:
+                w, h = img_wrapper.get_size()
+                pil_img = Image.frombytes("RGB", (w, h), img_wrapper.to_bytearray()[0])
 
-            # Calculate scaled dimensions maintaining aspect ratio
-            container_w = max(320, self.video_container.winfo_width())
-            container_h = max(240, self.video_container.winfo_height())
+            photo = ImageTk.PhotoImage(pil_img)
+            self.video_label.configure(image=photo)
+            self.video_label.image = photo
 
-            scale = min(container_w / w, container_h / h)
-            target_w = max(10, int(w * scale))
-            target_h = max(10, int(h * scale))
-
-            pil_img = Image.frombytes("RGB", (w, h), raw_bytes)
-            if target_w != w or target_h != h:
-                pil_img = pil_img.resize((target_w, target_h), Image.Resampling.BILINEAR)
-
-            ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(target_w, target_h))
-            self.video_label.configure(image=ctk_img)
-
-        # Update seek position and timeline using authoritative master PTS
-        if not self._is_seeking and self._player:
+        # Throttle timeline and seek slider updates to 4Hz (every 250ms) to eliminate UI layout overhead
+        now = time.monotonic()
+        if (now - self._last_ui_update_time >= 0.25) and not self._is_seeking and self._player:
+            self._last_ui_update_time = now
             curr_pts = self._player.get_pts()
             if curr_pts is not None:
                 self.seek_slider.set(float(curr_pts))
                 self.time_label.configure(text=f"{format_duration(int(curr_pts))} / {format_duration(self._duration)}")
 
-        if val == "eof":
+        if delay == "eof":
             logger.info("[Player] Reached end of video stream.")
             self.play_btn.configure(text="▶ Play")
             self._is_paused = True
             self._is_render_loop_running = False
+            self._scheduled_render_id = None
             return
 
-        # Schedule next frame read (~60 fps polling)
+        # Schedule next frame read strictly at calculated next frame arrival time
         self._is_render_loop_running = True
-        self.after(16, self._render_loop)
+        self._scheduled_render_id = self.after(int(max(4, min(40, next_delay_ms))), self._render_loop)
 
     def _toggle_play_pause(self):
         if not self._player:
@@ -472,7 +488,15 @@ class VideoPlayerModal(ctk.CTkToplevel):
             self.close()
 
     def _stop_current_player(self):
-        """Stops active player instance."""
+        """Stops active player instance and cancels pending render loop callbacks."""
+        if self._scheduled_render_id:
+            try:
+                self.after_cancel(self._scheduled_render_id)
+            except Exception:
+                pass
+            self._scheduled_render_id = None
+        self._is_render_loop_running = False
+
         if self._player:
             try:
                 self._player.close_player()

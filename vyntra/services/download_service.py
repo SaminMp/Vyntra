@@ -153,10 +153,20 @@ class DownloadService:
         # Base yt-dlp options
         ydl_opts = self.build_ydl_options(task, out_base_without_ext)
 
+        # Resolve effective download URL (match Spotify metadata to full song audio stream)
+        download_url = task.result.url
+        if getattr(task.result, "platform", "") == "spotify":
+            artist = getattr(task.result, "channel", "") or ""
+            title = getattr(task.result, "title", "") or task.result.display_title
+            query = f"{artist} - {title} audio".strip(" -")
+            download_url = f"ytsearch1:{query}"
+
         # Safe diagnostic format inspection logging
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl_probe:
-                meta = ydl_probe.extract_info(task.result.url, download=False)
+                meta = ydl_probe.extract_info(download_url, download=False)
+                if meta and "entries" in meta and meta["entries"]:
+                    meta = meta["entries"][0]
                 if meta:
                     v_h = meta.get("height")
                     v_res = f"{v_h}p" if v_h else (meta.get("resolution") or "audio only")
@@ -241,7 +251,14 @@ class DownloadService:
         logger.info("[Download] Configured directory: %s", configured_dir)
         logger.info("Starting download for '%s' to '%s'", task.result.title, unique_file_path)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([task.result.url])
+            try:
+                ydl.download([download_url])
+            except Exception as dl_err:
+                if download_url != task.result.url and getattr(task.result, "preview_url", None):
+                    logger.warning("[Download] Full song audio search failed (%s), falling back to preview URL", dl_err)
+                    ydl.download([task.result.preview_url])
+                else:
+                    raise
 
         # Resolve final produced file path
         if final_output_path[0] and final_output_path[0].is_file():

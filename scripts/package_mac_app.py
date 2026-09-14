@@ -33,7 +33,7 @@ def package_mac_app():
     # Read version dynamically
     sys.path.insert(0, str(root_dir))
     import vyntra
-    version = getattr(vyntra, "__version__", "1.2.0")
+    version = getattr(vyntra, "__version__", "1.2.1")
 
     # 2. Write Info.plist
     info_plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>

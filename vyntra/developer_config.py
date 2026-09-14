@@ -183,3 +183,60 @@ def load_developer_oauth_client(verbose_log: bool = False) -> Tuple[str, str, st
 
     return BUILTIN_CLIENT_ID, BUILTIN_CLIENT_SECRET, BUILTIN_PROJECT_ID, source
 
+
+def load_developer_spotify_credentials(verbose_log: bool = False) -> Tuple[str, str, str]:
+    """
+    Loads internal application-owned Spotify API credentials for development or CI environments.
+    End users never interact with this configuration.
+
+    Resolution order:
+    1. Environment variables: VYNTRA_SPOTIFY_CLIENT_ID, VYNTRA_SPOTIFY_CLIENT_SECRET
+       (fallback to SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET)
+    2. Local developer-only credentials.json file under 'spotify' key
+
+    Returns:
+        Tuple of (client_id, client_secret, source_description)
+    """
+    _load_dotenv_if_present()
+
+    # 1. Environment variables
+    for id_var, sec_var in [
+        ("VYNTRA_SPOTIFY_CLIENT_ID", "VYNTRA_SPOTIFY_CLIENT_SECRET"),
+        ("SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"),
+    ]:
+        env_id = os.environ.get(id_var, "").strip()
+        env_sec = os.environ.get(sec_var, "").strip()
+        if env_id and env_sec:
+            source = f"environment variable ({id_var})"
+            if verbose_log:
+                logger.info("[Spotify] Developer config source: %s", source)
+            return env_id, env_sec, source
+
+    # 2. Local candidate credentials.json files
+    candidate_paths = get_candidate_credential_paths()
+    for p in candidate_paths:
+        try:
+            if p.exists() and p.is_file():
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                cid = ""
+                csec = ""
+                spot = data.get("spotify")
+                if isinstance(spot, dict):
+                    cid = spot.get("client_id", "").strip()
+                    csec = spot.get("client_secret", "").strip()
+                if not cid or not csec:
+                    cid = data.get("spotify_client_id", "").strip()
+                    csec = data.get("spotify_client_secret", "").strip()
+
+                if cid and csec and not cid.startswith("YOUR_"):
+                    source = f"file ({p.name})"
+                    if verbose_log:
+                        logger.info("[Spotify] Developer config source: %s [%s]", source, p)
+                    return cid, csec, source
+        except Exception as e:
+            logger.debug("Could not read Spotify credentials from %s: %s", p, e)
+
+    return "", "", "none"
+
+

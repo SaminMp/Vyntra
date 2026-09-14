@@ -101,6 +101,56 @@ class TestSpotifyPlatform(unittest.TestCase):
         self.assertEqual(item.duration_formatted, "02:21")
         self.assertEqual(item.preview_url, "https://p.scdn.co/preview.mp3")
 
+    @patch.object(spotify_platform, "_get_api_access_token", return_value="mock_token")
+    @patch("urllib.request.urlopen")
+    def test_search_fallback_to_music_catalog_on_403(self, mock_urlopen, mock_token):
+        # 1st call to Spotify Web API raises HTTP 403 Forbidden
+        import urllib.error
+        err_403 = urllib.error.HTTPError(
+            url="https://api.spotify.com/v1/search",
+            code=403,
+            msg="Forbidden",
+            hdrs={},
+            fp=None,
+        )
+
+        catalog_resp = MagicMock()
+        catalog_resp.read.return_value = (
+            b'{"resultCount":1,"results":[{"trackId":12345,"trackName":"in the pool",'
+            b'"artistName":"kensuke ushio","collectionName":"Chainsaw Man OST",'
+            b'"trackTimeMillis":180000,"artworkUrl100":"https://img/100x100bb.jpg",'
+            b'"previewUrl":"https://audio/preview.m4a","trackViewUrl":"https://music/track"}]}'
+        )
+        catalog_cm = MagicMock()
+        catalog_cm.__enter__.return_value = catalog_resp
+
+        mock_urlopen.side_effect = [err_403, catalog_cm]
+
+        results = spotify_platform.search("in the pool", max_results=5)
+        self.assertEqual(len(results), 1)
+        item = results[0]
+        self.assertEqual(item.title, "in the pool")
+        self.assertEqual(item.channel, "kensuke ushio")
+        self.assertEqual(item.album, "Chainsaw Man OST")
+        self.assertEqual(item.duration_seconds, 180)
+        self.assertEqual(item.platform, "spotify")
+        self.assertEqual(item.preview_url, "https://audio/preview.m4a")
+        self.assertTrue("600x600bb.jpg" in item.thumbnail_url)
+
+    def test_prepare_playback_stream(self):
+        item = MediaItem(
+            video_id="test_123",
+            title="Test Song",
+            channel="Test Artist",
+            platform="spotify",
+            preview_url="https://audio/preview.mp3",
+        )
+        stream = spotify_platform.prepare_playback_stream(item)
+        self.assertEqual(stream.get("source_type"), "official_preview")
+        self.assertEqual(stream.get("url"), "https://audio/preview.mp3")
+        self.assertEqual(stream.get("duration_seconds"), 30)
+
 
 if __name__ == "__main__":
     unittest.main()
+

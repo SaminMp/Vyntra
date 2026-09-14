@@ -83,14 +83,14 @@ class SearchService:
 
         is_direct_url = self.is_youtube_url(cleaned_query)
 
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
+        # Use the unified yt-dlp options (SSL, proxy, user-agent, cookies) as base
+        # to ensure consistent network behavior across all YouTube operations.
+        ydl_opts = youtube_service.get_base_ydl_options(purpose="search")
+        ydl_opts.update({
             "extract_flat": True if not is_direct_url else False,
             "skip_download": True,
             "ignoreerrors": True,
-            "socket_timeout": 10,
-        }
+        })
 
         search_target = cleaned_query if is_direct_url else f"ytsearch{max_results}:{cleaned_query}"
         logger.info("Executing YouTube search for: '%s' (Direct URL: %s)", cleaned_query, is_direct_url)
@@ -116,8 +116,9 @@ class SearchService:
                                 results.append(parsed)
 
         except Exception as err:
-            logger.error("Error during YouTube search: %s", err)
-            raise RuntimeError(f"YouTube search error: {str(err)}") from err
+            classified = youtube_service.classify_error(err)
+            logger.error("Error during YouTube search: %s (classified: %s)", err, classified)
+            raise RuntimeError(classified) from err
 
         logger.info("Search returned %d results for '%s'", len(results), cleaned_query)
         return results

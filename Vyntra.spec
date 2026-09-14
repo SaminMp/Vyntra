@@ -21,7 +21,7 @@ try:
     sys.path.insert(0, project_dir)
     from vyntra import __version__ as app_version
 except Exception:
-    app_version = "1.2.0"
+    app_version = "1.2.1"
 
 # Base datas and assets
 datas = [
@@ -57,6 +57,10 @@ hiddenimports = [
     'vyntra.platforms.spotify',
     'vyntra.ui.pages',
     'vyntra.ui.views.update_modal',
+    'vyntra.ui.views.audio_player_modal',
+    'vyntra.services.audio_player',
+    'vyntra.services.diagnostic_service',
+    'certifi',
     'vyntra.updater',
     'vyntra.updater.auth_manager',
     'vyntra.updater.constants',

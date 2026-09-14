@@ -401,13 +401,13 @@ class SpotifyPage(BasePlatformPage):
         self.app.status_banner.show_error(f"Spotify error: {str(err)}")
 
     def _handle_play_preview(self):
-        """Plays the 30-second official preview stream via SynchronizedMediaPlayer."""
+        """Plays the 30-second official preview stream via dedicated AudioPlayerModal."""
         if not self._selected_item:
             self.app.status_banner.show_warning("Please select a song first.")
             return
 
-        self.status_msg.configure(text=f"Streaming preview: {self._selected_item.display_title}...")
-        self.app._handle_play_video(self._selected_item)
+        self.status_msg.configure(text=f"Playing preview: {self._selected_item.display_title}...")
+        self.app._handle_play_audio(self._selected_item)
 
     def _handle_start_download(self):
         """Dispatches audio-only MP3 download job."""

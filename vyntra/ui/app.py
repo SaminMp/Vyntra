@@ -32,6 +32,7 @@ from vyntra.ui.views.donation_modal import DonationModal
 from vyntra.ui.views.player_modal import VideoPlayerModal
 from vyntra.ui.views.settings_modal import SettingsModal
 from vyntra.ui.views.setup_wizard import SetupWizard
+from vyntra.ui.views.signin_required_modal import SignInRequiredModal
 from vyntra.ui.views.update_modal import UpdateModal
 from vyntra.ui.views.watch_later_view import WatchLaterView
 from vyntra.updater.manager import update_manager
@@ -99,6 +100,7 @@ class VyntraApp(ctk.CTk):
 
         self._active_task_id: Optional[str] = None
         self._player_modal: Optional[VideoPlayerModal] = None
+        self._audio_player_modal: Optional[Any] = None
         self._donation_modal: Optional[DonationModal] = None
         self._donation_shown_this_session: bool = False
         self._is_watch_later_active: bool = False
@@ -134,11 +136,11 @@ class VyntraApp(ctk.CTk):
         update_manager.add_listener(self._update_listener)
         self._update_check_after_id = self._safe_after(1000, lambda: update_manager.check_for_updates(background=True))
 
-        # First run: Show Setup Wizard if not completed
-        if not config_manager.config.setup_completed:
-            self._setup_wizard_after_id = self._safe_after(250, self._open_setup_wizard)
-        elif not config_manager.config.donation_prompt_dismissed:
-            self._donation_prompt_after_id = self._safe_after(3000, lambda: self._maybe_prompt_donation(trigger="launch"))
+        # Mandatory Authentication Check on launch
+        self._signin_required_modal: Optional[SignInRequiredModal] = None
+        self._auth_listener = lambda: self._safe_after(0, self._on_auth_state_changed)
+        auth_service.add_auth_listener(self._auth_listener)
+        self._check_auth_after_id = self._safe_after(250, self._check_mandatory_auth)
 
     def _safe_after(self, delay_ms: int, callback: Callable) -> Optional[str]:
         """Schedules a callback via after() while tracking ID for cancellation and verifying alive state."""
@@ -428,6 +430,10 @@ class VyntraApp(ctk.CTk):
 
     def _handle_play_video(self, result: MediaItem):
         """Launches live full video/audio player modal using SynchronizedMediaPlayer."""
+        if getattr(result, "platform", "") == "spotify":
+            self._handle_play_audio(result)
+            return
+
         if self._player_modal and self._player_modal.winfo_exists():
             self._player_modal.lift()
             self._player_modal.focus_force()
@@ -441,6 +447,23 @@ class VyntraApp(ctk.CTk):
 
     def _on_player_closed(self):
         self._player_modal = None
+
+    def _handle_play_audio(self, item: MediaItem):
+        """Launches dedicated audio-only player modal for Spotify and music items."""
+        from vyntra.ui.views.audio_player_modal import AudioPlayerModal
+        if hasattr(self, "_audio_player_modal") and self._audio_player_modal and self._audio_player_modal.winfo_exists():
+            self._audio_player_modal.lift()
+            self._audio_player_modal.focus_force()
+            self._audio_player_modal.load_audio(item)
+        else:
+            self._audio_player_modal = AudioPlayerModal(
+                master=self,
+                item=item,
+                on_close=self._on_audio_player_closed,
+            )
+
+    def _on_audio_player_closed(self):
+        self._audio_player_modal = None
 
     def _update_watch_later_badge(self):
         count = watch_later_service.count()
@@ -483,6 +506,8 @@ class VyntraApp(ctk.CTk):
                 auth_service.remove_auth_listener(self._auth_listener)
             if self._player_modal and self._player_modal.winfo_exists():
                 self._player_modal.close()
+            if hasattr(self, "_audio_player_modal") and self._audio_player_modal and self._audio_player_modal.winfo_exists():
+                self._audio_player_modal.close()
             stream_service.stop_playback()
             stream_server.stop()
         except Exception:
@@ -674,6 +699,52 @@ class VyntraApp(ctk.CTk):
 
     def _open_setup_wizard(self):
         SetupWizard(self, on_completed=self._on_setup_completed)
+
+    def _check_mandatory_auth(self):
+        """Ensures the user is signed in with Google. If not, displays the mandatory sign-in gate."""
+        if self._is_disposed:
+            return
+        status_key, _, _ = auth_service.get_connection_status()
+        if status_key != "connected":
+            self._show_signin_required_modal()
+        elif not config_manager.config.setup_completed:
+            self._open_setup_wizard()
+        elif not config_manager.config.donation_prompt_dismissed:
+            self._donation_prompt_after_id = self._safe_after(3000, lambda: self._maybe_prompt_donation(trigger="launch"))
+
+    def _show_signin_required_modal(self):
+        if self._is_disposed:
+            return
+        if self._signin_required_modal and self._signin_required_modal.winfo_exists():
+            self._signin_required_modal.lift()
+            self._signin_required_modal.focus_force()
+            return
+
+        def _on_signin_success():
+            self._signin_required_modal = None
+            self._update_auth_badge()
+            if not config_manager.config.setup_completed:
+                self._open_setup_wizard()
+            else:
+                self.status_banner.show_success("Signed in successfully! Welcome to Vyntra.")
+
+        self._signin_required_modal = SignInRequiredModal(self, on_success=_on_signin_success)
+
+    def _on_auth_state_changed(self):
+        """Called whenever authentication state changes (e.g. login or sign out)."""
+        if self._is_disposed:
+            return
+        self._update_auth_badge()
+        status_key, _, _ = auth_service.get_connection_status()
+        if status_key != "connected":
+            self._show_signin_required_modal()
+        elif self._signin_required_modal and self._signin_required_modal.winfo_exists():
+            try:
+                self._signin_required_modal.grab_release()
+            except Exception:
+                pass
+            self._signin_required_modal.destroy()
+            self._signin_required_modal = None
 
     def _on_setup_completed(self):
         self._update_auth_badge()
