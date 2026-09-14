@@ -98,7 +98,8 @@ class TestPlayerStreamPipeline(unittest.TestCase):
 
         self.assertTrue(error_event.wait(timeout=5.0))
         self.assertEqual(len(error_args), 1)
-        self.assertIn("sign-in verification", str(error_args[0]).lower())
+        self.assertIn("challenge", str(error_args[0]).lower())
+        self.assertNotIn("cookie", str(error_args[0]).lower())
 
 
 class TestDownloadFolderResolution(unittest.TestCase):

@@ -250,15 +250,29 @@ class DownloadService:
         configured_dir = Path(task.save_directory).resolve()
         logger.info("[Download] Configured directory: %s", configured_dir)
         logger.info("Starting download for '%s' to '%s'", task.result.title, unique_file_path)
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            try:
-                ydl.download([download_url])
-            except Exception as dl_err:
-                if download_url != task.result.url and getattr(task.result, "preview_url", None):
-                    logger.warning("[Download] Full song audio search failed (%s), falling back to preview URL", dl_err)
-                    ydl.download([task.result.preview_url])
-                else:
-                    raise
+        def _attempt_download(opts: dict, url: str):
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+
+        try:
+            _attempt_download(ydl_opts, download_url)
+        except Exception as dl_err:
+            dl_err_str = str(dl_err).lower()
+            if download_url != task.result.url and getattr(task.result, "preview_url", None):
+                logger.warning("[Download] Full song audio search failed (%s), falling back to preview URL", dl_err)
+                _attempt_download(ydl_opts, task.result.preview_url)
+            elif "not a bot" in dl_err_str or "no video formats" in dl_err_str or "403" in dl_err_str:
+                logger.warning("[Download] Primary strategy challenge (%s); retrying with resilient fallback...", dl_err)
+                fallback_opts = dict(ydl_opts)
+                if "extractor_args" in fallback_opts and "youtube" in fallback_opts["extractor_args"]:
+                    fallback_opts["extractor_args"] = dict(fallback_opts["extractor_args"])
+                    fallback_opts["extractor_args"]["youtube"] = {
+                        "player_client": ["web_embedded", "visionos", "android"],
+                        "fetch_pot": ["auto"],
+                    }
+                _attempt_download(fallback_opts, download_url)
+            else:
+                raise
 
         # Resolve final produced file path
         if final_output_path[0] and final_output_path[0].is_file():

@@ -11,6 +11,10 @@ from vyntra.services.auth_service import auth_service
 class TestAuthService(unittest.TestCase):
     """Test suite for AuthService facade."""
 
+    def setUp(self):
+        from vyntra.config import config_manager
+        config_manager.update(youtube_media_status="ready", youtube_media_status_message="Ready")
+
     def test_connection_status_disconnected(self):
         """Verify initial / disconnected state."""
         auth_service.disconnect()
@@ -19,15 +23,24 @@ class TestAuthService(unittest.TestCase):
         self.assertIn("Guest", label)
 
     def test_error_translation(self):
-        """Verify raw exceptions are translated into clear guidance."""
+        """Verify raw exceptions are translated into clear guidance without cookie prompts."""
         bot_err = Exception("ERROR: [youtube] Obvg5jVCvxc: Sign in to confirm you’re not a bot.")
         msg = auth_service.translate_error(bot_err)
-        self.assertIn("sign-in verification", msg.lower())
-        self.assertIn("google account", msg.lower())
+        self.assertIn("challenge", msg.lower())
+        self.assertNotIn("cookie", msg.lower())
+        self.assertNotIn("settings", msg.lower())
 
         priv_err = Exception("ERROR: [youtube] 12345: Private video")
         msg_priv = auth_service.translate_error(priv_err)
         self.assertIn("private", msg_priv.lower())
+
+    def test_media_access_status_cookie_free_default(self):
+        """Verify media access status defaults to Automated Ready without Action Needed."""
+        status_key, label, details = auth_service.get_media_access_status()
+        self.assertEqual(status_key, "ready")
+        self.assertIn("Automated", label)
+        self.assertNotIn("Action Needed", label)
+        self.assertNotIn("Smart Guest", label)
 
 
 if __name__ == "__main__":

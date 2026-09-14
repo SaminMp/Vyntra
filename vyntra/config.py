@@ -60,8 +60,8 @@ class AppConfig:
     youtube_media_browser: str = "firefox"  # "firefox", "chrome", "edge", "brave", "opera"
     youtube_media_browser_profile: str = ""
     youtube_media_custom_cookie_path: str = ""
-    youtube_media_status: str = "unconfigured"  # "ready", "unconfigured", "failed"
-    youtube_media_status_message: str = ""
+    youtube_media_status: str = "ready"  # "ready", "unconfigured", "failed"
+    youtube_media_status_message: str = "Ready"
 
     # Multi-platform settings
     instagram_custom_cookie_path: str = ""
@@ -97,6 +97,9 @@ class ConfigManager:
                 with open(self.config_file, "r", encoding="utf-8") as f:
                     data: Dict[str, Any] = json.load(f)
                 config = AppConfig(**{k: v for k, v in data.items() if k in AppConfig.__annotations__})
+                if config.youtube_media_status in ("unconfigured", "failed") and ("cookie" in (config.youtube_media_status_message or "").lower() or not config.youtube_media_status_message):
+                    config.youtube_media_status = "ready"
+                    config.youtube_media_status_message = "Ready"
                 logger.info("Loaded user configuration from %s", self.config_file)
                 return config
         except Exception as err:

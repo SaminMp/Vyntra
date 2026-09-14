@@ -296,8 +296,9 @@ class DownloadPanel(ctk.CTkFrame):
             self._probe_error_message = None
         else:
             self._probe_error_message = error_message or "Formats unavailable"
-            if "cookies" in self._probe_error_message.lower() or "verification" in self._probe_error_message.lower() or "bot" in self._probe_error_message.lower():
-                self._cached_video_resolutions = ["[ Verification Required ]"]
+            err_lower = self._probe_error_message.lower()
+            if "account access" in err_lower or "membership" in err_lower or "private" in err_lower:
+                self._cached_video_resolutions = ["[ Account Restricted ]"]
             else:
                 self._cached_video_resolutions = ["[ Formats Unavailable ]"]
         self.after(0, self._refresh_video_resolutions)

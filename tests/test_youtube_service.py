@@ -1,16 +1,16 @@
 """
-Comprehensive Unit and Integration Test Suite for Vyntra's Centralized YouTubeService.
+Comprehensive Unit and Integration Test Suite for Vyntra's Redesigned YouTubeService.
 
 Tests:
-- Base yt-dlp option construction and hardening
-- Player client fallback chain
+- Base yt-dlp option construction and hardening (cookie-free default, fetch_pot)
+- Prioritized player client fallback chain (mweb, web_embedded, visionos, android, tv_downgraded)
 - JavaScript runtime detection (Node.js >= 22.0.0) and EJS remote challenge solving
-- Cookie detection (explicit, user-consented only; NO silent browser scraping)
-- PO Token inspection and provider auditing
-- Format probing without fake fallbacks
-- Error classification (bot verification, rate limits, private videos)
-- Diagnostics mode output schema (Section 9) and strict privacy guarantee
-- SearchService delegation
+- Cookie management (NO silent browser harvesting; explicit user-consented file only)
+- Native PO Token Provider (VyntraPTP) inspection and automatic integration
+- Multi-strategy extraction fallback (Strategy 1 -> Strategy 2 -> Strategy 3)
+- Real format probing without fake fallbacks
+- Error classification (zero cookie prompts; clean content-restriction reporting)
+- Diagnostics mode output schema and strict privacy guarantee
 """
 
 import json
@@ -43,11 +43,13 @@ class TestYouTubeServiceOptions(unittest.TestCase):
         self.assertIn("extractor_args", opts)
         self.assertIn("youtube", opts["extractor_args"])
         self.assertIn("player_client", opts["extractor_args"]["youtube"])
+        self.assertIn("fetch_pot", opts["extractor_args"]["youtube"])
+        self.assertEqual(opts["extractor_args"]["youtube"]["fetch_pot"], ["auto"])
 
         clients = opts["extractor_args"]["youtube"]["player_client"]
-        self.assertEqual(clients, ["default"])
+        self.assertEqual(clients, ["mweb", "web_embedded", "visionos"])
 
-        # When cookies are present or auth_mode is browser, authed clients are used
+        # When explicit cookies are present, authed clients are used
         with patch.object(self.service, "is_cookies_available", return_value=True):
             authed_opts = self.service.get_base_ydl_options(purpose="probe")
             authed_clients = authed_opts["extractor_args"]["youtube"]["player_client"]
@@ -69,8 +71,13 @@ class TestYouTubeServiceCookiesAndPrivacy(unittest.TestCase):
     def setUp(self):
         self.service = YouTubeService()
 
-    def test_cookie_file_inclusion_when_present(self):
-        """Verifies cookie file is included when user explicitly provides ~/.vyntra/cookies.txt."""
+    def test_no_silent_browser_cookie_harvesting(self):
+        """CRITICAL: Verifies Vyntra NEVER silently harvests or reads browser databases."""
+        opts = self.service.get_base_ydl_options()
+        self.assertNotIn("cookiesfrombrowser", opts)
+
+    def test_cookie_file_inclusion_when_explicitly_present(self):
+        """Verifies cookie file is included only when user explicitly provides a custom cookie file."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tf:
             tf.write("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t1800000000\tSID\tsecret_val\n")
             temp_path = tf.name
@@ -90,28 +97,6 @@ class TestYouTubeServiceCookiesAndPrivacy(unittest.TestCase):
             opts = self.service.get_base_ydl_options()
             self.assertNotIn("cookiefile", opts)
 
-    def test_browser_cookies_attached_when_configured(self):
-        """Verifies yt-dlp receives cookiesfrombrowser tuple when user explicitly configures browser."""
-        with patch.object(config_manager.config, "youtube_media_auth_mode", "browser"), \
-             patch.object(config_manager.config, "youtube_media_browser", "firefox"), \
-             patch.object(config_manager.config, "youtube_media_browser_profile", ""):
-            opts = self.service.get_base_ydl_options()
-            self.assertEqual(opts.get("cookiesfrombrowser"), ("firefox", None, None, None))
-            self.assertNotIn("cookiefile", opts)
-
-    @patch("yt_dlp.YoutubeDL")
-    def test_media_access_dpapi_detection(self, mock_ydl_class):
-        """Verifies Chrome/Edge Windows App-Bound DPAPI errors are caught with helpful guidance."""
-        mock_ydl = MagicMock()
-        mock_ydl_class.return_value.__enter__.return_value = mock_ydl
-        mock_ydl.extract_info.side_effect = RuntimeError("Failed to decrypt with DPAPI. See https://github.com/yt-dlp/yt-dlp/issues/10927")
-
-        ok, msg = self.service.test_youtube_media_access("test_vid")
-        self.assertFalse(ok)
-        self.assertIn("App-Bound encryption", msg)
-        self.assertIn("Firefox", msg)
-        self.assertNotIn("Traceback", msg)
-
 
 class TestYouTubeServicePOToken(unittest.TestCase):
     """Verifies PO Token inspection and provider auditing."""
@@ -119,13 +104,36 @@ class TestYouTubeServicePOToken(unittest.TestCase):
     def setUp(self):
         self.service = YouTubeService()
 
-    def test_po_token_absent(self):
-        """Verifies PO token info when no token file exists."""
-        with patch("pathlib.Path.is_file", return_value=False):
-            provider, is_gen, is_att = self.service.get_po_token_info()
-            self.assertEqual(provider, "None (No PO Token Provider Configured)")
-            self.assertFalse(is_gen)
-            self.assertFalse(is_att)
+    def test_po_token_provider_active(self):
+        """Verifies native Vyntra PO Token Provider is active and reporting."""
+        provider, is_gen, is_att = self.service.get_po_token_info()
+        self.assertTrue(is_gen)
+        self.assertTrue(is_att)
+        self.assertIn("PO Token Provider", provider)
+
+
+class TestYouTubeServiceMultiStrategyFallback(unittest.TestCase):
+    """Verifies multi-tier client fallback behavior across strategies."""
+
+    def setUp(self):
+        self.service = YouTubeService()
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_fallback_to_strategy_2_on_strategy_1_failure(self, mock_ydl_class):
+        """Verifies that if Strategy 1 encounters a challenge, Strategy 2 is tried and succeeds."""
+        mock_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__.return_value = mock_instance
+
+        # First call (Strategy 1) fails with bot check; Second call (Strategy 2) succeeds
+        mock_instance.extract_info.side_effect = [
+            RuntimeError("ERROR: [youtube] id123: Sign in to confirm you’re not a bot."),
+            {"title": "Test Video", "formats": [{"height": 720, "vcodec": "avc1"}]},
+        ]
+
+        info = self.service.extract_info_with_fallback("https://www.youtube.com/watch?v=id123")
+        self.assertIsNotNone(info)
+        self.assertEqual(info.get("title"), "Test Video")
+        self.assertEqual(mock_instance.extract_info.call_count, 2)
 
 
 class TestYouTubeServiceFormatProbing(unittest.TestCase):
@@ -134,12 +142,10 @@ class TestYouTubeServiceFormatProbing(unittest.TestCase):
     def setUp(self):
         self.service = YouTubeService()
 
-    @patch("yt_dlp.YoutubeDL")
-    def test_format_probe_success(self, mock_ydl_class):
+    @patch.object(YouTubeService, "extract_info_with_fallback")
+    def test_format_probe_success(self, mock_extract):
         """Verifies resolution sorting and deduplication on success."""
-        mock_ydl = MagicMock()
-        mock_ydl_class.return_value.__enter__.return_value = mock_ydl
-        mock_ydl.extract_info.return_value = {
+        mock_extract.return_value = {
             "formats": [
                 {"height": 2160, "vcodec": "vp9"},
                 {"height": 1080, "vcodec": "avc1"},
@@ -157,35 +163,52 @@ class TestYouTubeServiceFormatProbing(unittest.TestCase):
             ["Best (Auto)", "2160p (4K)", "1080p (FHD)", "720p (HD)", "360p"],
         )
 
-    @patch("yt_dlp.YoutubeDL")
-    def test_format_probe_failure_returns_empty_never_fake_fallbacks(self, mock_ydl_class):
+    @patch.object(YouTubeService, "extract_info_with_fallback")
+    def test_format_probe_failure_returns_empty_never_fake_fallbacks(self, mock_extract):
         """CRITICAL: Verifies that probe failure returns ([], error_message) and NEVER fake resolutions."""
-        mock_ydl = MagicMock()
-        mock_ydl_class.return_value.__enter__.return_value = mock_ydl
-        mock_ydl.extract_info.side_effect = RuntimeError("ERROR: [youtube] rJgNgZRCi6s: Sign in to confirm you’re not a bot.")
+        mock_extract.side_effect = RuntimeError("ERROR: [youtube] rJgNgZRCi6s: Sign in to confirm you’re not a bot.")
 
         resolutions, err = self.service.get_available_resolutions("rJgNgZRCi6s")
         self.assertEqual(resolutions, [])
         self.assertIsNotNone(err)
-        self.assertIn("verification", err.lower())
+        self.assertIn("challenge", err.lower())
+        # Ensure NO cookie prompt is present
+        self.assertNotIn("cookie", err.lower())
+        self.assertNotIn("settings", err.lower())
 
 
 class TestYouTubeServiceErrorClassification(unittest.TestCase):
-    """Verifies that YouTube errors are translated into clear, accurate human categories."""
+    """Verifies that YouTube errors are translated into clear, accurate human categories without cookie prompts."""
 
     def setUp(self):
         self.service = YouTubeService()
 
-    def test_classify_bot_verification(self):
+    def test_classify_bot_verification_no_cookie_prompts(self):
+        """CRITICAL: Bot challenges must NEVER ask the user to configure cookies in Settings."""
         err = Exception("Sign in to confirm you’re not a bot. Use --cookies-from-browser")
         classified = self.service.classify_error(err)
-        self.assertIn("sign-in verification", classified.lower())
-        self.assertIn("google account", classified.lower())
+        self.assertNotIn("cookie", classified.lower())
+        self.assertNotIn("settings", classified.lower())
+        self.assertNotIn("firefox", classified.lower())
+        self.assertIn("challenge", classified.lower())
 
     def test_classify_private_video(self):
         err = Exception("ERROR: [youtube] abc: Private video")
         classified = self.service.classify_error(err)
         self.assertIn("private", classified.lower())
+        self.assertNotIn("cookie", classified.lower())
+
+    def test_classify_members_only(self):
+        err = Exception("ERROR: [youtube] abc: Join this channel to get access to members-only content")
+        classified = self.service.classify_error(err)
+        self.assertIn("membership", classified.lower())
+        self.assertNotIn("cookie", classified.lower())
+
+    def test_classify_age_restricted(self):
+        err = Exception("ERROR: [youtube] abc: Sign in to confirm your age")
+        classified = self.service.classify_error(err)
+        self.assertIn("age-restricted", classified.lower())
+        self.assertNotIn("cookie", classified.lower())
 
     def test_classify_rate_limit(self):
         err = Exception("HTTP Error 429: Too Many Requests")
@@ -194,17 +217,15 @@ class TestYouTubeServiceErrorClassification(unittest.TestCase):
 
 
 class TestYouTubeServiceDiagnostics(unittest.TestCase):
-    """Verifies diagnostics report format matches Section 9 exact specification."""
+    """Verifies diagnostics report format and absence of secrets."""
 
     def setUp(self):
         self.service = YouTubeService()
 
-    @patch("yt_dlp.YoutubeDL")
-    def test_diagnose_video_schema(self, mock_ydl_class):
+    @patch.object(YouTubeService, "extract_info_with_fallback")
+    def test_diagnose_video_schema(self, mock_extract):
         """Verifies report header, section headers, and absence of secrets."""
-        mock_ydl = MagicMock()
-        mock_ydl_class.return_value.__enter__.return_value = mock_ydl
-        mock_ydl.extract_info.return_value = {
+        mock_extract.return_value = {
             "formats": [
                 {"height": 1080, "vcodec": "avc1", "ext": "mp4"},
                 {"height": 720, "vcodec": "avc1", "ext": "mp4"},

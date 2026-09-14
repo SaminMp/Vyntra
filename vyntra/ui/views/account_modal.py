@@ -125,7 +125,8 @@ class AccountModal(ctk.CTkToplevel):
             sec_box,
             text=(
                 "🔒 Google Identity & Privacy Architecture:\n"
-                "• Sign-in is required to authorize YouTube access for streaming and downloading.\n"
+                "• Connect your Google account to access your playlists, subscriptions, and library.\n"
+                "• Media extraction is handled automatically and cookie-free by Vyntra.\n"
                 "• Vyntra does NOT store, collect, or share your personal data or passwords.\n"
                 "• Credentials are authenticated via Google OAuth 2.0 and kept securely in your local OS keyring."
             ),

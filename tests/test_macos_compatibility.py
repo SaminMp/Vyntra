@@ -54,23 +54,12 @@ class TestMacOSCompatibility(unittest.TestCase):
             self.assertIn("/opt/homebrew/bin/ffmpeg", candidates, "Apple Silicon Homebrew path must be checked")
             self.assertIn("/usr/local/bin/ffmpeg", candidates, "Intel Homebrew path must be checked")
 
-    def test_safari_browser_cookie_option_in_youtube_service(self):
-        """Verifies that Safari browser option can be configured and parsed."""
-        from vyntra.config import config_manager
-        orig_mode = config_manager.config.youtube_media_auth_mode
-        orig_browser = config_manager.config.youtube_media_browser
-        try:
-            config_manager.update(
-                youtube_media_auth_mode="browser",
-                youtube_media_browser="safari"
-            )
-            ydl_opts = youtube_service.get_base_ydl_options(purpose="search")
-            self.assertEqual(ydl_opts.get("cookiesfrombrowser"), ("safari", None, None, None))
-        finally:
-            config_manager.update(
-                youtube_media_auth_mode=orig_mode,
-                youtube_media_browser=orig_browser
-            )
+    def test_macos_cookie_free_option_in_youtube_service(self):
+        """Verifies that macOS uses cookie-free automated player clients by default."""
+        ydl_opts = youtube_service.get_base_ydl_options(purpose="probe")
+        self.assertNotIn("cookiesfrombrowser", ydl_opts)
+        clients = ydl_opts.get("extractor_args", {}).get("youtube", {}).get("player_client", [])
+        self.assertIn("mweb", clients)
 
     def test_mac_app_bundle_structure(self):
         """Verifies dist/Vyntra.app bundle structure, Info.plist, and launcher."""

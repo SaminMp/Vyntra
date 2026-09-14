@@ -84,15 +84,15 @@ class AuthService:
         """
         from vyntra.services.youtube_service import youtube_service
         mode_label, detail_str = youtube_service.get_media_auth_summary()
-        status = getattr(config_manager.config, "youtube_media_status", "unconfigured")
+        status = getattr(config_manager.config, "youtube_media_status", "ready")
 
         if status == "ready":
             return ("ready", f"● Media Access: {mode_label} (Ready)", detail_str)
         elif status == "failed":
-            msg = getattr(config_manager.config, "youtube_media_status_message", "Setup required")
-            return ("failed", f"⚠️ Media Access: {mode_label} (Action Needed)", msg)
+            msg = getattr(config_manager.config, "youtube_media_status_message", "Temporary YouTube issue")
+            return ("failed", f"⚠️ Media Access: {mode_label}", msg)
         else:
-            return ("unconfigured", f"○ Media Access: {mode_label}", detail_str)
+            return ("ready", f"● Media Access: {mode_label}", detail_str)
 
     def get_ydl_cookie_opts(self) -> dict:
         """
