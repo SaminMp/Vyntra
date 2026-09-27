@@ -19,6 +19,9 @@ class TestPlayerStreamPipeline(unittest.TestCase):
     """Tests for the video playback preparation and stream extraction pipeline."""
 
     def setUp(self):
+        youtube_service._media_info_cache.clear()
+        youtube_service._failed_cache.clear()
+        youtube_service._resolution_cache.clear()
         self.result = SearchResult(
             video_id="test_vid_123",
             title="Sample Video",
@@ -28,6 +31,11 @@ class TestPlayerStreamPipeline(unittest.TestCase):
             thumbnail_url="https://example.com/thumb.jpg",
             url="https://www.youtube.com/watch?v=test_vid_123",
         )
+
+    def tearDown(self):
+        youtube_service._media_info_cache.clear()
+        youtube_service._failed_cache.clear()
+        youtube_service._resolution_cache.clear()
 
     def test_prepare_playback_finds_existing_local_file(self):
         """Verifies that an existing local downloaded video is reused immediately without network extraction."""

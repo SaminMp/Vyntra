@@ -21,7 +21,7 @@ try:
     sys.path.insert(0, project_dir)
     from vyntra import __version__ as app_version
 except Exception:
-    app_version = "1.2.1"
+    app_version = "1.2.5"
 
 # Base datas and assets
 datas = [

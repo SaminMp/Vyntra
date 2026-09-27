@@ -164,6 +164,79 @@ class TestYouTubeAuthManager(unittest.TestCase):
         self.assertEqual(server.query_params, {})
         server.server_close()
 
+    def test_is_valid_oauth_client_id(self):
+        """Verify is_valid_oauth_client_id correctly filters valid and invalid client IDs."""
+        from vyntra.developer_config import is_valid_oauth_client_id
+
+        # Valid client IDs
+        self.assertTrue(is_valid_oauth_client_id("664376478747-jkdsvkhu5qf1rp64hup632hjso0npdou.apps.googleusercontent.com"))
+        self.assertTrue(is_valid_oauth_client_id("123456789012-abcdefghijklmnop.apps.googleusercontent.com"))
+
+        # Invalid: test/mock
+        self.assertFalse(is_valid_oauth_client_id("123456789-test.apps.googleusercontent.com"))
+        self.assertFalse(is_valid_oauth_client_id("test.apps.googleusercontent.com"))
+
+        # Invalid: placeholder
+        self.assertFalse(is_valid_oauth_client_id("YOUR_GOOGLE_CLOUD_CLIENT_ID.apps.googleusercontent.com"))
+        self.assertFalse(is_valid_oauth_client_id("placeholder-id.apps.googleusercontent.com"))
+
+        # Invalid: syntax, quotes, spaces, missing suffix
+        self.assertFalse(is_valid_oauth_client_id(""))
+        self.assertFalse(is_valid_oauth_client_id(None))
+        self.assertFalse(is_valid_oauth_client_id("664376478747-jkdsvkhu5qf1rp64hup632hjso0npdou"))
+        self.assertFalse(is_valid_oauth_client_id("\"664376478747-jkdsvkhu5qf1rp64hup632hjso0npdou.apps.googleusercontent.com\""))
+        self.assertFalse(is_valid_oauth_client_id("664376478747-jkdsvkhu5qf1rp64hup632hjso0npdou.apps.googleusercontent.com\n"))
+
+    def test_candidate_paths_excludes_user_home_dir(self):
+        """Verify get_candidate_credential_paths strictly excludes ~/.vyntra."""
+        from pathlib import Path
+        from vyntra.developer_config import get_candidate_credential_paths
+        paths = get_candidate_credential_paths()
+        home_vyntra = Path.home() / ".vyntra"
+        for p in paths:
+            self.assertFalse(
+                str(p.resolve()).startswith(str(home_vyntra.resolve())),
+                f"Candidate path {p} must not reside in ~/.vyntra",
+            )
+
+    def test_load_developer_oauth_client_rejects_mock_override(self):
+        """Verify load_developer_oauth_client rejects mock client IDs and falls back to BUILTIN_CLIENT_ID."""
+        from vyntra.developer_config import load_developer_oauth_client, BUILTIN_CLIENT_ID
+        import os
+
+        # Mock env var with test client ID
+        mock_env = {
+            "VYNTRA_GOOGLE_CLIENT_ID": "123456789-test.apps.googleusercontent.com",
+            "VYNTRA_GOOGLE_CLIENT_SECRET": "test_secret",
+        }
+        with patch.dict(os.environ, mock_env):
+            cid, sec, pid, source = load_developer_oauth_client()
+            # Must reject mock and return built-in
+            self.assertEqual(cid, BUILTIN_CLIENT_ID)
+            self.assertEqual(source, "bundled credentials")
+
+    def test_classify_oauth_error(self):
+        """Verify classify_oauth_error provides clear, category-specific user messages."""
+        from vyntra.services.auth_manager import classify_oauth_error
+
+        msg = classify_oauth_error("access_denied")
+        self.assertIn("cancelled", msg.lower())
+
+        msg = classify_oauth_error("invalid_client")
+        self.assertIn("client", msg.lower())
+
+        msg = classify_oauth_error("invalid_grant")
+        self.assertIn("expired", msg.lower())
+
+        msg = classify_oauth_error("redirect_uri_mismatch")
+        self.assertIn("redirect", msg.lower())
+
+        msg = classify_oauth_error("network_error")
+        self.assertIn("internet", msg.lower())
+
+        msg = classify_oauth_error("", http_status=503)
+        self.assertIn("unavailable", msg.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

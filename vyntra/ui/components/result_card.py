@@ -270,9 +270,8 @@ class ResultCard(ctk.CTkFrame):
             self.on_select(self.result)
 
     def _handle_preview(self):
-        # Select the card and trigger preview
-        if self.on_select:
-            self.on_select(self.result)
+        # Visually select the card and trigger playback directly without redundant format probing
+        self.set_selected(True)
         if self.on_preview:
             self.on_preview(self.result)
 

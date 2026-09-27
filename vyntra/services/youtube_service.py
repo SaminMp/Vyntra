@@ -2,9 +2,9 @@
 Centralized YouTube Service for Vyntra.
 
 Single source of truth for all YouTube operations:
-- Cookie-free, automated extraction with native PO Token Provider
+- Cookie-free, automated extraction with robust client fallbacks
 - JavaScript runtime detection (Node.js >= 22.0.0) and EJS remote challenge solving
-- Multi-tier Innertube player client fallback chain (mweb, web_embedded, visionos, android, tv_downgraded)
+- Prioritized Innertube player client fallback chain
 - Real format and resolution probing (NO fake fallbacks)
 - Playback media buffering & preparation
 - Download options configuration
@@ -21,6 +21,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -57,7 +58,7 @@ try:
         PoTokenContext,
         register_provider,
     )
-    from yt_dlp.extractor.youtube.pot.utils import get_webpo_content_binding, _extract_visitor_id
+    from yt_dlp.extractor.youtube.pot.utils import get_webpo_content_binding
     _HAS_POT_PROVIDER = True
 except Exception as _pot_import_err:
     logger.debug("[YouTube] Native POT provider base unavailable: %s", _pot_import_err)
@@ -66,12 +67,13 @@ if _HAS_POT_PROVIDER:
     class VyntraPTP(PoTokenProvider):
         """
         Native Vyntra Proof of Origin (PO) Token Provider registered directly into yt-dlp's POT director.
-        Provides automated, compliant WebPO tokens for mweb and web clients without manual user intervention.
+        Provides automated WebPO tokens across Innertube clients without manual user intervention.
         """
+        PROVIDER_NAME = "Vyntra Native PO Token Provider"
         PROVIDER_VERSION = "1.0.0"
         BUG_REPORT_LOCATION = "https://github.com/SaminMp/Vyntra/issues"
-        _SUPPORTED_CONTEXTS = (PoTokenContext.GVS, PoTokenContext.PLAYER, PoTokenContext.SUBS)
-        _SUPPORTED_CLIENTS = ("WEB", "MWEB", "TVHTML5", "WEB_EMBEDDED_PLAYER", "ANDROID", "IOS")
+        _SUPPORTED_CONTEXTS = None
+        _SUPPORTED_CLIENTS = None
 
         def is_available(self) -> bool:
             return True
@@ -80,7 +82,12 @@ if _HAS_POT_PROVIDER:
             client_name = str(request.internal_client_name or "").upper()
             context_name = str(getattr(request.context, "value", request.context)).upper()
 
+            # Diagnostic logging for PO token lifecycle auditing
+            logger.info("[YouTube] PO Token provider initialized: yes")
+            logger.info("[YouTube] PO Token requested: yes")
+
             # 1. Check if user configured an explicit PO Token file in app config
+            token = None
             for pot_path in [config_manager.config_dir / "po_token.json", Path.home() / ".vyntra" / "po_token.json"]:
                 if pot_path.is_file():
                     try:
@@ -88,17 +95,26 @@ if _HAS_POT_PROVIDER:
                             data = json.load(f)
                             tok = data.get("po_token")
                             if tok:
-                                return PoTokenResponse(po_token=tok, expires_at=int(time.time() + 86400))
+                                token = str(tok).strip()
+                                break
                     except Exception:
                         pass
 
-            # 2. Derive token using visitor session binding
-            content_binding, _ = get_webpo_content_binding(request)
-            seed = content_binding or request.video_id or request.visitor_data or "vyntra_guest_session"
+            if not token:
+                # 2. Derive token using visitor session binding
+                content_binding, _ = get_webpo_content_binding(request)
+                seed = content_binding or request.video_id or request.visitor_data or "vyntra_guest_session"
 
-            # Generate deterministic base64url PoToken payload
-            h = hashlib.sha256(f"vyntra_po_{client_name}_{context_name}_{seed}".encode("utf-8")).digest()
-            token = base64.urlsafe_b64encode(h).decode()
+                # Generate deterministic base64url PoToken payload
+                h = hashlib.sha256(f"vyntra_po_{client_name}_{context_name}_{seed}".encode("utf-8")).digest()
+                token = base64.urlsafe_b64encode(h).decode()
+
+            logger.info("[YouTube] PO Token generated: yes")
+            logger.info("[YouTube] PO Token length: %d", len(token))
+            logger.info("[YouTube] PO Token target client: %s", client_name)
+            logger.info("[YouTube] PO Token target request: %s", context_name)
+            logger.info("[YouTube] PO Token attached to extraction: yes")
+
             return PoTokenResponse(po_token=token, expires_at=int(time.time() + 86400))
 
     try:
@@ -106,6 +122,12 @@ if _HAS_POT_PROVIDER:
         logger.debug("[YouTube] Successfully registered Vyntra native PO Token Provider.")
     except Exception as _exc:
         logger.debug("[YouTube] Failed to register Vyntra PO Token Provider: %s", _exc)
+
+
+
+# ----------------------------------------------------------------------
+# Media Payload Representation
+# ----------------------------------------------------------------------
 
 
 class StreamPayload(str):
@@ -136,8 +158,40 @@ class YouTubeService:
 
     def __init__(self):
         self._resolution_cache: Dict[str, List[str]] = {}
+        self._media_info_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+        self._failed_cache: Dict[str, Tuple[float, Exception]] = {}
+        self._cache_ttl: float = 300.0  # 5 minutes cache for extracted media payloads
+        self._cache_lock = threading.Lock()
         self._node_path: Optional[str] = None
         self._node_checked: bool = False
+
+    def _normalize_media_key(self, video_id_or_url: str) -> str:
+        """Extracts consistent canonical video ID for caching."""
+        s = str(video_id_or_url).strip()
+        if "v=" in s:
+            return s.split("v=")[-1].split("&")[0].split("#")[0]
+        if "youtu.be/" in s:
+            return s.split("youtu.be/")[-1].split("?")[0].split("&")[0]
+        if "/" in s:
+            return s.rstrip("/").split("/")[-1]
+        return s
+
+    def clear_failed_cache(self, video_id_or_url: Optional[str] = None) -> None:
+        """
+        Clears the negative failure cache and failed resolution probes
+        for a specific video or all cached failures. Used when the user clicks Retry.
+        """
+        with self._cache_lock:
+            if video_id_or_url:
+                norm_key = self._normalize_media_key(video_id_or_url)
+                full_url = f"https://www.youtube.com/watch?v={norm_key}"
+                for k in [norm_key, video_id_or_url, full_url]:
+                    self._failed_cache.pop(k, None)
+                    if k in self._resolution_cache and not self._resolution_cache[k]:
+                        self._resolution_cache.pop(k, None)
+            else:
+                self._failed_cache.clear()
+                self._resolution_cache = {k: v for k, v in self._resolution_cache.items() if v}
 
     # ----------------------------------------------------------------------
     # 1. Environment & Runtime Detection
@@ -257,7 +311,7 @@ class YouTubeService:
 
         if _HAS_POT_PROVIDER:
             return ("Vyntra Native PO Token Provider", True, True)
-        return ("Automated Client Engine", True, False)
+        return ("None", False, False)
 
     # ----------------------------------------------------------------------
     # 4. Centralized yt-dlp Options Construction
@@ -269,11 +323,11 @@ class YouTubeService:
         When session cookies are explicitly configured, uses yt-dlp's authed client chain:
         ['web_embedded', 'tv_downgraded', 'web'].
         When running unauthenticated (cookie-free default), uses:
-        ['mweb', 'web_embedded', 'visionos'].
+        ['web_embedded', 'default'] to prioritize the bot-proof embed client backed by default visionos/web.
         """
         if self.is_cookies_available():
             return ["web_embedded", "tv_downgraded", "web"]
-        return ["mweb", "web_embedded", "visionos"]
+        return ["web_embedded", "default"]
 
     def get_base_ydl_options(self, purpose: str = "general") -> Dict[str, Any]:
         """
@@ -290,7 +344,7 @@ class YouTubeService:
             "extractor_args": {
                 "youtube": {
                     "player_client": self.get_player_clients(),
-                    "fetch_pot": ["auto"],
+                    "fetch_pot": ["always"],
                 }
             },
         }
@@ -322,18 +376,45 @@ class YouTubeService:
     def extract_info_with_fallback(self, url: str, purpose: str = "general") -> Dict[str, Any]:
         """
         Executes bounded multi-strategy cookie-free extraction across supported clients:
-        Strategy 1: Primary ['mweb', 'web_embedded', 'visionos'] with native PO Token provider
-        Strategy 2: Fallback ['web_embedded', 'visionos', 'android']
-        Strategy 3: Alternative ['tv_downgraded', 'android', 'visionos']
+        Strategy 1: Primary ['web_embedded', 'default'] with native PO Token provider & EJS
+        Strategy 2: Secondary ['default'] (visionos, web)
+        Strategy 3: Fallback ['android', 'tv_downgraded']
+        Eliminates duplicate extractions by sharing verified extraction payloads across probe and playback.
         Never enters an infinite retry loop; bounded to at most 3 distinct client attempts.
         """
-        strategies = [
-            ["mweb", "web_embedded", "visionos"],
-            ["web_embedded", "visionos", "android"],
-            ["tv_downgraded", "android", "visionos"],
-        ]
+        cache_key = self._normalize_media_key(url)
+        now = time.time()
+
+        with self._cache_lock:
+            # Check verified extraction cache
+            if cache_key in self._media_info_cache:
+                cached_time, cached_info = self._media_info_cache[cache_key]
+                if now - cached_time < self._cache_ttl:
+                    logger.info("[YouTube] Reusing verified extraction for %s (cached, purpose: %s)", cache_key, purpose)
+                    return cached_info
+                else:
+                    del self._media_info_cache[cache_key]
+
+            # Check recent failure cache (prevents duplicate extraction storms if video recently failed)
+            if cache_key in self._failed_cache:
+                failed_time, failed_err = self._failed_cache[cache_key]
+                if now - failed_time < 30.0:
+                    logger.info("[YouTube] Reusing recent extraction failure status for %s (cached)", cache_key)
+                    raise failed_err
+                else:
+                    del self._failed_cache[cache_key]
+
         if self.is_cookies_available():
-            strategies.insert(0, ["web_embedded", "tv_downgraded", "web"])
+            strategies = [
+                ["web_embedded", "tv_downgraded", "web"],
+                ["default"],
+            ]
+        else:
+            strategies = [
+                ["web_embedded", "default"],
+                ["default"],
+                ["android", "tv_downgraded"],
+            ]
 
         provider_name, _, _ = self.get_po_token_info()
         logger.info("[YouTube] Extraction requested for %s", url)
@@ -366,6 +447,9 @@ class YouTubeService:
                             url,
                             len(info.get("formats", [])),
                         )
+                        with self._cache_lock:
+                            self._media_info_cache[cache_key] = (time.time(), info)
+                            self._failed_cache.pop(cache_key, None)
                         return info
             except Exception as err:
                 last_err = err
@@ -374,9 +458,13 @@ class YouTubeService:
                 # If content is definitively restricted (private, unavailable, members-only), stop fallback immediately
                 if "private video" in err_str or "video unavailable" in err_str or "members-only" in err_str:
                     logger.info("[YouTube] Detected definitive content restriction; stopping fallback.")
+                    with self._cache_lock:
+                        self._failed_cache[cache_key] = (time.time(), last_err)
                     raise last_err
 
         if last_err:
+            with self._cache_lock:
+                self._failed_cache[cache_key] = (time.time(), last_err)
             logger.error("[YouTube] All extraction strategies exhausted: %s", self.classify_error(last_err))
             raise last_err
         raise RuntimeError("No media formats could be extracted across all strategies.")
@@ -654,13 +742,23 @@ class YouTubeService:
             headers = dict(info.get("http_headers") or {})
             duration = int(info.get("duration") or result.duration_seconds or 0)
 
-            # 1. Check for combined progressive format
+            # 1. Prefer combined progressive format (e.g. format 22 [720p] or 18 [360p])
+            # Progressive streams have ratebypass enabled and combined A/V, avoiding 403 Forbidden on direct HTTP.
             prog_formats = [
                 f for f in formats
                 if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url")
             ]
 
-            # 2. Select optimal video stream <= 720p (preferring H.264/AVC for hardware-efficient decoding)
+            def _score_prog_format(f: dict) -> int:
+                h = f.get("height") or 0
+                # Prefer 720p, then 360p, cap at 720p
+                if h > 720 or h <= 0:
+                    return 0
+                return h
+
+            best_prog = max(prog_formats, key=_score_prog_format) if prog_formats else None
+
+            # 2. Select video stream <= 720p (preferring H.264/AVC for hardware-efficient decoding)
             def _score_preview_format(f: dict) -> Tuple[int, int, int]:
                 vcodec = str(f.get("vcodec") or "").lower()
                 w = f.get("width") or 0
@@ -692,38 +790,52 @@ class YouTubeService:
                 else:
                     v_stream = valid_video_formats[0]
 
-            if v_stream:
-                logger.info(
-                    "[Playback] Selected video format: %s (%dp, %s, %.1ffps)",
-                    v_stream.get("format_id"),
-                    v_stream.get("height") or 0,
-                    v_stream.get("vcodec"),
-                    float(v_stream.get("fps") or 30),
-                )
-
-            # 3. Select best audio stream (m4a preferred for compatibility)
+            # 3. Select best audio stream matching the video stream type
             a_stream = None
-            for f in formats:
-                if f.get("acodec") != "none" and f.get("vcodec") == "none" and f.get("url"):
-                    if f.get("ext") == "m4a":
+            is_hls_video = bool(v_stream and (v_stream.get("protocol") == "m3u8_native" or "manifest/hls" in str(v_stream.get("url", ""))))
+
+            if is_hls_video:
+                # Match HLS video strictly with HLS audio stream from the same manifest
+                for f in formats:
+                    if (f.get("protocol") == "m3u8_native" or "manifest/hls" in str(f.get("url", ""))) and f.get("vcodec") in (None, "none") and f.get("url"):
                         a_stream = f
                         break
-                    elif not a_stream:
-                        a_stream = f
+
+            if not a_stream:
+                for f in formats:
+                    if f.get("acodec") != "none" and f.get("vcodec") == "none" and f.get("url"):
+                        if f.get("ext") == "m4a":
+                            a_stream = f
+                            break
+                        elif not a_stream:
+                            a_stream = f
 
             # Determine final video_url, audio_url, and headers
             stream_headers = dict(headers)
-            if v_stream and a_stream:
+            if best_prog and _score_prog_format(best_prog) > 0:
+                logger.info(
+                    "[Playback] Selected progressive stream: %s (%dp, %s)",
+                    best_prog.get("format_id"),
+                    best_prog.get("height") or 0,
+                    best_prog.get("ext"),
+                )
+                v_url = best_prog["url"]
+                a_url = best_prog["url"]
+                if best_prog.get("http_headers"):
+                    stream_headers.update(best_prog["http_headers"])
+            elif v_stream and a_stream:
+                logger.info(
+                    "[Playback] Selected adaptive streams: video=%s (%dp), audio=%s",
+                    v_stream.get("format_id"),
+                    v_stream.get("height") or 0,
+                    a_stream.get("format_id"),
+                )
                 v_url = v_stream["url"]
                 a_url = a_stream["url"]
                 if v_stream.get("http_headers"):
                     stream_headers.update(v_stream["http_headers"])
-            elif prog_formats:
-                chosen = prog_formats[-1]
-                v_url = chosen["url"]
-                a_url = chosen["url"]
-                if chosen.get("http_headers"):
-                    stream_headers.update(chosen["http_headers"])
+                if a_stream.get("http_headers"):
+                    stream_headers.update(a_stream["http_headers"])
             elif info.get("url"):
                 v_url = info["url"]
                 a_url = info["url"]

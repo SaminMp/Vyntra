@@ -20,7 +20,7 @@ import keyring
 import requests
 
 from vyntra.config import config_manager
-from vyntra.developer_config import load_developer_oauth_client, mask_client_id
+from vyntra.developer_config import is_valid_oauth_client_id, load_developer_oauth_client, mask_client_id
 from vyntra.utils.logger import logger
 
 KEYRING_SERVICE_NAME = "Vyntra_YouTube_Auth"
@@ -38,6 +38,36 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/youtube.readonly",
 ]
+
+
+def classify_oauth_error(error_code: str, error_desc: str = "", http_status: int = 0) -> str:
+    """
+    Translates Google OAuth error responses into clear, category-specific user messages
+    without exposing raw secrets or developer tokens.
+    """
+    code = (error_code or "").strip().lower()
+    desc = (error_desc or "").strip().lower()
+
+    if code == "access_denied" or "access_denied" in desc:
+        return "Sign-in was cancelled or declined. To connect your YouTube account, please approve the requested permissions."
+    elif code == "invalid_client" or "invalid_client" in desc or "oauth client was not found" in desc:
+        return "Google sign-in client configuration issue. The OAuth client is invalid or disabled. Please update Vyntra to the latest version."
+    elif code == "invalid_grant" or "invalid_grant" in desc or "expired" in desc or "revoked" in desc:
+        return "The authorization code or session has expired. Please try signing in again."
+    elif code == "redirect_uri_mismatch" or "redirect_uri_mismatch" in desc:
+        return "Redirect URI configuration error. The loopback address could not be matched by Google."
+    elif code in ("invalid_request", "unauthorized_client", "unsupported_response_type"):
+        return f"Google authorization request could not be processed ({error_code}). Please try again."
+    elif code == "network_error":
+        return "Unable to reach Google authentication servers. Please check your internet connection and try again."
+    elif http_status in (401, 403):
+        return f"Google authorization was rejected ({http_status}). Please reconnect your account."
+    elif http_status >= 500:
+        return "Google authentication servers are temporarily unavailable. Please try again shortly."
+    elif error_code:
+        return f"Sign-in could not be completed ({error_code}). Please try again."
+    else:
+        return "Sign-in could not be completed. Please check your internet connection and try again."
 
 
 class OAuthState(str, Enum):
@@ -108,7 +138,9 @@ class _OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
         error = params.get("error", [None])[0]
+        error_desc = params.get("error_description", [None])[0]
         if error:
+            user_msg = classify_oauth_error(error, error_desc or "")
             html = f"""
             <!DOCTYPE html>
             <html>
@@ -117,7 +149,7 @@ class _OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
                 <div style="background: #151A23; border: 1px solid #FF5252; padding: 40px; border-radius: 16px; text-align: center; max-width: 440px;">
                     <div style="font-size: 48px; margin-bottom: 12px;">⚠️</div>
                     <h2 style="margin: 0 0 10px 0; color: #FF5252;">Sign-In Cancelled</h2>
-                    <p style="color: #8C9BAE; font-size: 14px;">Google sign-in was cancelled ({error}). You can close this tab and return to Vyntra.</p>
+                    <p style="color: #8C9BAE; font-size: 14px;">{user_msg}</p>
                 </div>
             </body>
             </html>
@@ -148,6 +180,7 @@ class YouTubeAuthManager:
         self._state: OAuthState = OAuthState.IDLE
         self._state_listeners: List[Callable[[OAuthState, str], None]] = []
         self._lock = threading.Lock()
+
         # Log diagnostic status on startup
         load_developer_oauth_client(verbose_log=True)
         self.load_credentials()
@@ -192,7 +225,7 @@ class YouTubeAuthManager:
     def has_valid_client_id(self) -> bool:
         """Checks if a genuine non-placeholder Google Client ID is configured."""
         cid, _ = self.get_client_credentials()
-        return bool(cid and not cid.startswith("YOUR_GOOGLE_CLOUD") and ".apps.googleusercontent.com" in cid)
+        return is_valid_oauth_client_id(cid)
 
     def _generate_pkce(self) -> Tuple[str, str]:
         """Generates RFC 7636 PKCE code_verifier and code_challenge."""
@@ -286,10 +319,12 @@ class YouTubeAuthManager:
                 self._set_state(OAuthState.CALLBACK_RECEIVED)
 
                 error = params.get("error", [None])[0]
+                error_desc = params.get("error_description", [None])[0]
                 if error:
-                    logger.warning("[OAuth] Google authorization returned error: %s", error)
+                    logger.warning("[OAuth] Google authorization returned error: %s (desc: %s)", error, error_desc)
+                    friendly_msg = classify_oauth_error(error, error_desc or "")
                     self._set_state(OAuthState.AUTHORIZATION_FAILED, f"Cancelled: {error}")
-                    on_complete(False, f"Sign-in cancelled: {error}", None)
+                    on_complete(False, friendly_msg, None)
                     return
 
                 received_state = params.get("state", [None])[0]
@@ -349,7 +384,16 @@ class YouTubeAuthManager:
             if resp.status_code != 200:
                 logger.error("[OAuth] Token exchange failed (%d): %s", resp.status_code, resp.text)
                 self._set_state(OAuthState.TOKEN_EXCHANGE_FAILED, f"HTTP {resp.status_code}")
-                return (False, f"Google token exchange failed ({resp.status_code}). Please try again.", None)
+                err_code = ""
+                err_desc = ""
+                try:
+                    err_json = resp.json()
+                    err_code = err_json.get("error", "")
+                    err_desc = err_json.get("error_description", "")
+                except Exception:
+                    pass
+                friendly_msg = classify_oauth_error(err_code, err_desc, http_status=resp.status_code)
+                return (False, friendly_msg, None)
 
             logger.info("[OAuth] Token exchange successful")
             token_json = resp.json()
@@ -392,7 +436,8 @@ class YouTubeAuthManager:
         except Exception as err:
             logger.error("[OAuth] Network error during token exchange: %s", err)
             self._set_state(OAuthState.TOKEN_EXCHANGE_FAILED, str(err))
-            return (False, f"Google login succeeded, but Vyntra network error prevented token exchange: {err}", None)
+            friendly_msg = classify_oauth_error("network_error", str(err))
+            return (False, friendly_msg, None)
 
     def _fetch_userinfo(self, access_token: str) -> Dict:
         """Fetches user profile (email, name, picture) using OAuth access token."""

@@ -4,6 +4,7 @@ Provides unified single-pipeline video and audio playback slaved to a master aud
 Uses PyAV (libavformat/libavcodec) and PortAudio/sounddevice for hardware-accurate lip-sync.
 """
 
+from enum import Enum
 import os
 from pathlib import Path
 import queue
@@ -22,6 +23,17 @@ except ImportError:
 
 from PIL import Image
 from vyntra.utils.logger import logger
+
+
+class PlayerState(Enum):
+    """Lifecycle and presentation states of SynchronizedMediaPlayer."""
+    LOADING = "loading"
+    PLAYING = "playing"
+    BUFFERING = "buffering"
+    PAUSED = "paused"
+    ENDED = "ended"
+    ERROR = "error"
+    STOPPED = "stopped"
 
 
 class ImageWrapper:
@@ -73,6 +85,12 @@ class SynchronizedMediaPlayer:
         self._is_closed = False
         self._is_seeking = False
         self._eof_reached = False
+
+        self._state: PlayerState = PlayerState.LOADING
+        self._last_error: Optional[str] = None
+        self._seek_epoch: int = 0
+        self._audio_resampler_epoch: int = -1
+        self._fallback_buffering_start: float = 0.0
 
         self._lock = threading.RLock()
         self._seek_lock = threading.Lock()
@@ -168,8 +186,12 @@ class SynchronizedMediaPlayer:
             self._fallback_start_time = time.monotonic() - self._master_audio_pts
             self._is_seeking = False
             self._eof_reached = False
+            self._last_error = None
+            self._state = PlayerState.LOADING
 
             if not PYAV_AUDIO_AVAILABLE:
+                self._last_error = "PyAV or sounddevice not available."
+                self._state = PlayerState.ERROR
                 logger.warning("[Player] PyAV or sounddevice not available.")
                 return
 
@@ -249,6 +271,11 @@ class SynchronizedMediaPlayer:
                         break
                     time.sleep(0.015)
 
+                if self._is_paused:
+                    self._state = PlayerState.PAUSED
+                else:
+                    self._state = PlayerState.PLAYING
+
                 # 5. Start audio output hardware stream
                 self._fallback_start_time = time.monotonic() - start_pts
                 self._init_audio_hardware()
@@ -257,7 +284,12 @@ class SynchronizedMediaPlayer:
                     self._log_diagnostics(force=True)
 
             except Exception as err:
+                self._last_error = str(err)
+                self._state = PlayerState.ERROR
+                self._is_closed = True
+                self._close_internal_pipeline()
                 logger.error("[Player] Failed to start synchronized media pipeline: %s", err, exc_info=True)
+                return
 
     def _init_audio_hardware(self):
         """Initializes the PortAudio/WASAPI output stream slaved to master clock."""
@@ -272,8 +304,8 @@ class SynchronizedMediaPlayer:
             written = 0
 
             with self._seek_lock:
-                if self._is_seeking or self._is_paused:
-                    outdata.fill(0)
+                if self._is_seeking or self._is_paused or self._state == PlayerState.BUFFERING:
+                    outdata[:] = b"\x00" * len(outdata)
                     return
 
                 vol = 0.0 if self._is_muted else self._volume
@@ -282,7 +314,13 @@ class SynchronizedMediaPlayer:
                     raw_b, offset = self._current_audio_chunk
                     if offset >= len(raw_b):
                         try:
-                            new_b, chunk_pts = self._audio_queue.get_nowait()
+                            item = self._audio_queue.get_nowait()
+                            if len(item) == 3:
+                                new_b, chunk_pts, chunk_epoch = item
+                                if chunk_epoch != self._seek_epoch:
+                                    continue
+                            else:
+                                new_b, chunk_pts = item
                             self._current_audio_chunk = [new_b, 0]
                             self._master_audio_pts = chunk_pts
                             raw_b, offset = self._current_audio_chunk
@@ -340,11 +378,8 @@ class SynchronizedMediaPlayer:
 
         try:
             target_sr = getattr(self, "_device_sample_rate", self._audio_sample_rate)
-            resampler = av.AudioResampler(
-                format="s16",
-                layout="stereo",
-                rate=target_sr,
-            )
+            resampler = None
+            resampler_epoch = -1
             bytes_per_sample = self._audio_channels * 2
 
             while not self._is_closed:
@@ -352,8 +387,17 @@ class SynchronizedMediaPlayer:
                     time.sleep(0.01)
                     continue
 
+                curr_epoch = self._seek_epoch
+                if resampler is None or resampler_epoch != curr_epoch:
+                    resampler = av.AudioResampler(
+                        format="s16",
+                        layout="stereo",
+                        rate=target_sr,
+                    )
+                    resampler_epoch = curr_epoch
+
                 with self._demux_a_lock:
-                    if self._is_closed or self._is_seeking:
+                    if self._is_closed or self._is_seeking or self._seek_epoch != curr_epoch:
                         continue
                     try:
                         packet = next(self._a_demux_iter)
@@ -370,16 +414,16 @@ class SynchronizedMediaPlayer:
                     continue
 
                 for frame in frames:
-                    if self._is_closed or self._is_seeking:
+                    if self._is_closed or self._is_seeking or self._seek_epoch != curr_epoch:
                         break
                     for resampled_frame in resampler.resample(frame):
                         # Truncate to exact valid sample bytes, discarding FFmpeg internal memory alignment padding
                         valid_bytes = resampled_frame.samples * bytes_per_sample
                         raw_pcm = bytes(resampled_frame.planes[0])[:valid_bytes]
                         pts = float(frame.pts * self._a_time_base) if frame.pts is not None else self._master_audio_pts
-                        while not self._is_closed and not self._is_seeking:
+                        while not self._is_closed and not self._is_seeking and self._seek_epoch == curr_epoch:
                             try:
-                                self._audio_queue.put((raw_pcm, pts), timeout=0.05)
+                                self._audio_queue.put((raw_pcm, pts, curr_epoch), timeout=0.05)
                                 break
                             except queue.Full:
                                 continue
@@ -398,8 +442,9 @@ class SynchronizedMediaPlayer:
                     time.sleep(0.01)
                     continue
 
+                curr_epoch = self._seek_epoch
                 with self._demux_v_lock:
-                    if self._is_closed or self._is_seeking:
+                    if self._is_closed or self._is_seeking or self._seek_epoch != curr_epoch:
                         continue
                     try:
                         packet = next(self._v_demux_iter)
@@ -416,20 +461,20 @@ class SynchronizedMediaPlayer:
                     continue
 
                 for frame in frames:
-                    if self._is_closed or self._is_seeking:
+                    if self._is_closed or self._is_seeking or self._seek_epoch != curr_epoch:
                         break
                     pts = float(frame.pts * self._v_time_base) if frame.pts is not None else self._last_video_pts
 
-                    while not self._is_closed and not self._is_seeking:
+                    while not self._is_closed and not self._is_seeking and self._seek_epoch == curr_epoch:
                         try:
-                            self._video_queue.put((frame, pts), timeout=0.05)
+                            self._video_queue.put((frame, pts, curr_epoch), timeout=0.05)
                             break
                         except queue.Full:
                             continue
 
             # Signal EOF
             if not self._is_closed:
-                self._video_queue.put((None, "eof"))
+                self._video_queue.put((None, "eof", self._seek_epoch))
 
         except Exception as e:
             if not self._is_closed:
@@ -446,17 +491,41 @@ class SynchronizedMediaPlayer:
         Returns:
             ((ImageWrapper, pts), next_delay_ms) or (None, "eof") or (None, wait_delay_ms)
         """
+        if self._last_error:
+            return None, "error"
+
         if self._is_closed:
             return None, "eof"
 
         if self._is_paused:
             return None, None
 
+        # Check buffering recovery
+        min_v_frames = 6 if self._v_stream else 0
+        min_a_frames = 12 if self._a_stream else 0
+
+        if self._state == PlayerState.BUFFERING:
+            v_ok = (not self._v_stream) or (self._video_queue.qsize() >= min_v_frames) or self._eof_reached
+            a_ok = (not self._a_stream) or (self._audio_queue.qsize() >= min_a_frames) or self._eof_reached
+            if v_ok and a_ok:
+                logger.info("[Player] Buffering satisfied (v_q=%d, a_q=%d) -> Resuming PLAYING",
+                            self._video_queue.qsize(), self._audio_queue.qsize())
+                if self._fallback_buffering_start > 0:
+                    self._fallback_start_time += (time.monotonic() - self._fallback_buffering_start)
+                    self._fallback_buffering_start = 0.0
+                self._state = PlayerState.PLAYING
+            else:
+                return None, 25.0
+
         # Authoritative master clock
         if self._audio_stream_active:
             clock = self._master_audio_pts
         else:
             clock = max(0.0, time.monotonic() - self._fallback_start_time)
+            # Bound clock to last delivered frame + 1.5 frame interval so it NEVER runs away
+            frame_dur = 1.0 / max(1.0, self.fps)
+            if self._last_video_pts > 0:
+                clock = min(clock, self._last_video_pts + 1.5 * frame_dur)
             self._master_audio_pts = clock
 
         # Frame pacing and synchronization logic
@@ -465,11 +534,29 @@ class SynchronizedMediaPlayer:
                 try:
                     self._current_video_frame = self._video_queue.get_nowait()
                 except queue.Empty:
-                    return None, 16.0
+                    if self._eof_reached:
+                        self._state = PlayerState.ENDED
+                        return None, "eof"
+                    # Starvation: transition to BUFFERING
+                    if self._state == PlayerState.PLAYING:
+                        logger.info("[Player] Video frame queue starved -> BUFFERING (pts=%.2fs)", self._last_video_pts)
+                        self._state = PlayerState.BUFFERING
+                        self._fallback_buffering_start = time.monotonic()
+                    return None, 20.0
 
-            av_frame, pts_or_eof = self._current_video_frame
+            queue_item = self._current_video_frame
+            if len(queue_item) == 3:
+                av_frame, pts_or_eof, frame_epoch = queue_item
+                if frame_epoch != self._seek_epoch:
+                    # Stale frame from prior seek epoch; discard
+                    self._current_video_frame = None
+                    continue
+            else:
+                av_frame, pts_or_eof = queue_item
+
             if pts_or_eof == "eof":
                 self._eof_reached = True
+                self._state = PlayerState.ENDED
                 return None, "eof"
 
             v_pts = float(pts_or_eof)
@@ -526,12 +613,32 @@ class SynchronizedMediaPlayer:
 
     def get_pts(self) -> float:
         """Returns the current master media presentation timestamp in seconds."""
+        if self._is_closed or self._last_error:
+            return self._last_video_pts
+        if self._state == PlayerState.LOADING or self._state == PlayerState.BUFFERING:
+            return self._last_video_pts
+        if self._is_paused:
+            return max(0.0, self._fallback_pause_time - self._fallback_start_time)
         if self._audio_stream_active:
             return self._master_audio_pts
-        elif self._is_paused:
-            return max(0.0, self._fallback_pause_time - self._fallback_start_time)
         else:
-            return max(0.0, time.monotonic() - self._fallback_start_time)
+            frame_dur = 1.0 / max(1.0, self.fps)
+            monotonic_advance = max(0.0, time.monotonic() - self._fallback_start_time)
+            if self._last_video_pts > 0:
+                return min(monotonic_advance, self._last_video_pts + 1.5 * frame_dur)
+            return monotonic_advance
+
+    def get_state(self) -> PlayerState:
+        """Returns the current lifecycle and buffering state of the player."""
+        if self._last_error:
+            return PlayerState.ERROR
+        if self._is_closed:
+            return PlayerState.STOPPED
+        if self._eof_reached:
+            return PlayerState.ENDED
+        if self._is_paused:
+            return PlayerState.PAUSED
+        return self._state
 
     def is_eof(self) -> bool:
         """Returns True if the media stream has signaled EOF."""
@@ -547,6 +654,7 @@ class SynchronizedMediaPlayer:
             now = time.monotonic()
 
             if paused:
+                self._state = PlayerState.PAUSED
                 self._fallback_pause_time = now
                 if self._audio_device_stream:
                     try:
@@ -554,6 +662,7 @@ class SynchronizedMediaPlayer:
                     except Exception:
                         pass
             else:
+                self._state = PlayerState.PLAYING
                 paused_duration = now - self._fallback_pause_time
                 self._fallback_start_time += paused_duration
                 if self._audio_device_stream:
@@ -569,7 +678,7 @@ class SynchronizedMediaPlayer:
         Performs an authoritative synchronized seek across audio and video on the media timeline.
         """
         with self._lock:
-            if self._is_closed:
+            if self._is_closed or self._last_error:
                 return
 
             curr = self.get_pts()
@@ -579,6 +688,7 @@ class SynchronizedMediaPlayer:
 
             with self._seek_lock:
                 self._is_seeking = True
+                self._seek_epoch += 1
 
                 # 1. Drain queues
                 while not self._audio_queue.empty():
@@ -596,16 +706,31 @@ class SynchronizedMediaPlayer:
                 self._current_audio_chunk = [b"", 0]
                 self._current_video_frame = None
 
-                # 2. Seek underlying stream demuxers
+                # 2. Flush decoder buffers
+                if self._v_stream and hasattr(self._v_stream, "codec_context") and self._v_stream.codec_context:
+                    try:
+                        self._v_stream.codec_context.flush_buffers()
+                    except Exception:
+                        pass
+                if self._a_stream and hasattr(self._a_stream, "codec_context") and self._a_stream.codec_context:
+                    try:
+                        self._a_stream.codec_context.flush_buffers()
+                    except Exception:
+                        pass
+
+                # 3. Seek underlying stream demuxers
                 self._seek_containers_internal(target)
 
-                # 3. Update master clock
+                # 4. Update master clock and state
                 self._master_audio_pts = target
                 self._last_video_pts = target
                 self._fallback_start_time = time.monotonic() - target
+                self._fallback_buffering_start = time.monotonic()
+                self._eof_reached = False
+                self._state = PlayerState.BUFFERING
                 self._is_seeking = False
 
-            logger.info("[Player] Seek completed at master PTS: %.2fs", target)
+            logger.info("[Player] Seek completed at master PTS: %.2fs (epoch=%d)", target, self._seek_epoch)
 
     def _seek_containers_internal(self, target_pts: float):
         """Seeks both video and audio PyAV containers to target_pts thread-safely."""

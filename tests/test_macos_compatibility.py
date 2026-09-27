@@ -59,7 +59,7 @@ class TestMacOSCompatibility(unittest.TestCase):
         ydl_opts = youtube_service.get_base_ydl_options(purpose="probe")
         self.assertNotIn("cookiesfrombrowser", ydl_opts)
         clients = ydl_opts.get("extractor_args", {}).get("youtube", {}).get("player_client", [])
-        self.assertIn("mweb", clients)
+        self.assertIn("default", clients)
 
     def test_mac_app_bundle_structure(self):
         """Verifies dist/Vyntra.app bundle structure, Info.plist, and launcher."""

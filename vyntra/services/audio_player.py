@@ -322,6 +322,11 @@ class AudioPlayer:
                     except Exception as e:
                         logger.warning("[AudioPlayer] Seek failed: %s", e)
 
+            # Ensure decoder thread is alive if it finished due to previous EOF
+            if not self._decoder_thread or not self._decoder_thread.is_alive():
+                self._decoder_thread = threading.Thread(target=self._decoder_loop, daemon=True, name="AudioPlayerDecoder")
+                self._decoder_thread.start()
+
             self._is_seeking = False
 
     def set_volume(self, volume: float):

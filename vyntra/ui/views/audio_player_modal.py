@@ -45,7 +45,8 @@ class AudioPlayerModal(ctk.CTkToplevel):
         self._is_paused = False
         self._is_muted = False
         self._previous_volume = 1.0
-        self._duration = item.duration_seconds or 30
+        self._playable_duration: float = 30.0 if getattr(item, "platform", "") == "spotify" else float(item.duration_seconds or 30)
+        self._duration: int = item.duration_seconds or int(self._playable_duration)
         self._is_seeking = False
         self._is_poll_running = False
 
@@ -197,7 +198,7 @@ class AudioPlayerModal(ctk.CTkToplevel):
         self.seek_slider = ctk.CTkSlider(
             seek_row,
             from_=0.0,
-            to=max(1.0, float(self._duration)),
+            to=max(1.0, float(self._playable_duration)),
             number_of_steps=1000,
             height=14,
             progress_color=Theme.SUCCESS if getattr(self.item, "platform", "") == "spotify" else Theme.PRIMARY,
@@ -211,7 +212,7 @@ class AudioPlayerModal(ctk.CTkToplevel):
 
         self.time_total_label = ctk.CTkLabel(
             seek_row,
-            text=format_duration(self._duration),
+            text=format_duration(int(self._playable_duration)),
             font=Theme.FONT_CAPTION,
             text_color=Theme.TEXT_MUTED,
             width=40,
@@ -309,15 +310,22 @@ class AudioPlayerModal(ctk.CTkToplevel):
     def load_audio(self, item: MediaItem):
         """Resolves audio stream via platform service and initializes playback."""
         self.item = item
-        self._duration = item.duration_seconds or 30
+        is_spotify = getattr(item, "platform", "") == "spotify"
+        self._playable_duration = 30.0 if is_spotify else float(item.duration_seconds or 30)
+        self._duration = item.duration_seconds or int(self._playable_duration)
+
         self.title_label.configure(text=item.display_title)
         artist_text = item.channel
         if getattr(item, "album", None):
             artist_text += f"  •  {item.album}"
+        if is_spotify and item.duration_seconds and item.duration_seconds > 30:
+            artist_text += f"  •  Track: {format_duration(item.duration_seconds)} (30s Preview)"
         self.artist_label.configure(text=artist_text)
-        self.time_total_label.configure(text=format_duration(self._duration))
-        self.seek_slider.configure(to=max(1.0, float(self._duration)))
+
+        self.time_total_label.configure(text=format_duration(int(self._playable_duration)))
+        self.seek_slider.configure(to=max(1.0, float(self._playable_duration)))
         self.seek_slider.set(0.0)
+        self.time_current_label.configure(text="00:00")
         self.status_label.configure(text="Resolving audio stream...", text_color=Theme.TEXT_MUTED)
 
         # Load artwork
@@ -367,6 +375,17 @@ class AudioPlayerModal(ctk.CTkToplevel):
         self._stop_current_player()
         headers = stream_info.get("headers", {}) if isinstance(stream_info, dict) else {}
 
+        # Determine actual playable preview duration
+        if isinstance(stream_info, dict):
+            preview_dur = stream_info.get("preview_duration")
+            if preview_dur:
+                self._playable_duration = float(preview_dur)
+            elif stream_info.get("is_preview") or getattr(self.item, "platform", "") == "spotify":
+                self._playable_duration = 30.0
+
+        self.seek_slider.configure(to=max(1.0, float(self._playable_duration)))
+        self.time_total_label.configure(text=format_duration(int(self._playable_duration)))
+
         # Construct pure audio media payload
         audio_payload = {
             "audio_url": audio_url,
@@ -393,13 +412,13 @@ class AudioPlayerModal(ctk.CTkToplevel):
             return
 
         if self._player:
-            current_pts = self._player.get_pts()
+            current_pts = min(self._player.get_pts(), self._playable_duration)
             if not self._is_seeking:
                 self.seek_slider.set(current_pts)
                 self.time_current_label.configure(text=format_duration(current_pts))
 
-            # Auto-stop on EOF
-            if self._player.is_eof() and current_pts >= self._duration - 1.0:
+            # Auto-stop on EOF or end of preview
+            if self._player.is_eof() or current_pts >= (self._playable_duration - 0.2):
                 self._is_paused = True
                 self.play_btn.configure(text="▶ Play")
                 self.status_label.configure(text="Playback completed", text_color=Theme.TEXT_MUTED)
@@ -410,6 +429,21 @@ class AudioPlayerModal(ctk.CTkToplevel):
     def _toggle_play_pause(self):
         if not self._player:
             return
+
+        # If at or near end, restart from beginning
+        if self._player.is_eof() or (self._player.get_pts() >= self._playable_duration - 0.5):
+            self._player.seek(0.0)
+            self.seek_slider.set(0.0)
+            self.time_current_label.configure(text="00:00")
+            self._is_paused = False
+            self._player.set_pause(False)
+            self.play_btn.configure(text="⏸ Pause")
+            self.status_label.configure(text="Playing audio", text_color=Theme.SUCCESS)
+            if not self._is_poll_running:
+                self._is_poll_running = True
+                self.after(100, self._poll_time_loop)
+            return
+
         self._is_paused = not self._is_paused
         self._player.set_pause(self._is_paused)
         self.play_btn.configure(text="▶ Play" if self._is_paused else "⏸ Pause")
@@ -417,24 +451,28 @@ class AudioPlayerModal(ctk.CTkToplevel):
             text="Paused" if self._is_paused else "Playing audio",
             text_color=Theme.TEXT_MUTED if self._is_paused else Theme.SUCCESS,
         )
+        if not self._is_paused and not self._is_poll_running:
+            self._is_poll_running = True
+            self.after(100, self._poll_time_loop)
 
     def _on_seek_drag(self, val: float):
         self._is_seeking = True
-        self.time_current_label.configure(text=format_duration(val))
+        clamped = max(0.0, min(self._playable_duration, float(val)))
+        self.time_current_label.configure(text=format_duration(clamped))
 
     def _on_seek_commit(self, event=None):
         if not self._player:
             self._is_seeking = False
             return
-        target_pts = float(self.seek_slider.get())
+        target_pts = max(0.0, min(self._playable_duration, float(self.seek_slider.get())))
         self._player.seek(target_pts)
         self._is_seeking = False
 
     def _seek_relative(self, delta_secs: float):
         if not self._player:
             return
-        current = self._player.get_pts()
-        target = max(0.0, min(float(self._duration), current + delta_secs))
+        current = min(self._player.get_pts(), self._playable_duration)
+        target = max(0.0, min(self._playable_duration, current + delta_secs))
         self.seek_slider.set(target)
         self.time_current_label.configure(text=format_duration(target))
         self._player.seek(target)

@@ -66,6 +66,39 @@ def mask_client_id(client_id: str) -> str:
 
 
 
+def is_valid_oauth_client_id(client_id: str) -> bool:
+    """
+    Validates that a Google OAuth client ID is syntactically well-formed,
+    ends with the standard Google suffix, and is not a placeholder, mock test ID,
+    or corrupted with whitespace/quotes/newlines.
+    """
+    if not client_id or not isinstance(client_id, str):
+        return False
+    # Reject strings with quotes, newlines, carriage returns, or tabs
+    if any(c in client_id for c in ("'", '"', "\n", "\r", "\t")):
+        return False
+    cid = client_id.strip()
+    if not cid.endswith(".apps.googleusercontent.com"):
+        return False
+    if " " in cid:
+        return False
+    lower = cid.lower()
+    # Reject placeholders and test mock clients
+    if (
+        lower.startswith("your_")
+        or "placeholder" in lower
+        or "-test." in lower
+        or "test.apps.googleusercontent.com" in lower
+        or "example" in lower
+    ):
+        return False
+    # Google client IDs have numeric prefix before hyphen
+    prefix = cid.split(".apps.googleusercontent.com")[0]
+    if "-" not in prefix:
+        return False
+    return True
+
+
 def get_candidate_credential_paths() -> List[Path]:
     """
     Resolves potential paths for developer credentials.json across different environments:
@@ -73,7 +106,9 @@ def get_candidate_credential_paths() -> List[Path]:
     - Executable directory (packaged application)
     - Current working directory
     - Source repository root relative to this module
-    - User config directory (~/.vyntra/)
+
+    Note: User home directory (~/.vyntra/) is strictly excluded to prevent
+    untrusted or stale local data from overriding application OAuth configuration.
     """
     paths: List[Path] = []
 
@@ -107,14 +142,6 @@ def get_candidate_credential_paths() -> List[Path]:
     except Exception:
         pass
 
-    # 5. User home config directory (~/.vyntra/)
-    try:
-        home_dir = Path.home() / ".vyntra"
-        paths.append(home_dir / "credentials.json")
-        paths.append(home_dir / "client_secret.json")
-    except Exception:
-        pass
-
     # Deduplicate while preserving order
     seen = set()
     unique_paths: List[Path] = []
@@ -133,7 +160,7 @@ def load_developer_oauth_client(verbose_log: bool = False) -> Tuple[str, str, st
 
     Resolution order:
     1. Environment variables: VYNTRA_GOOGLE_CLIENT_ID, VYNTRA_GOOGLE_CLIENT_SECRET
-    2. Local credentials.json / client_secret.json (in CWD, package root, exe dir, ~/.vyntra/)
+    2. Local credentials.json / client_secret.json (in CWD, package root, exe dir)
     3. Built-in bundled Desktop OAuth configuration
 
     Returns:
@@ -144,12 +171,18 @@ def load_developer_oauth_client(verbose_log: bool = False) -> Tuple[str, str, st
     env_id = os.environ.get("VYNTRA_GOOGLE_CLIENT_ID", "").strip()
     env_secret = os.environ.get("VYNTRA_GOOGLE_CLIENT_SECRET", "").strip()
     if env_id:
-        source = "environment variable (VYNTRA_GOOGLE_CLIENT_ID)"
-        if verbose_log:
-            logger.info("[OAuth] Configuration source: %s", source)
-            logger.info("[OAuth] Client ID loaded: %s", mask_client_id(env_id))
-            logger.info("[OAuth] Client type: Desktop (RFC 8252)")
-        return env_id, env_secret, "Environment", source
+        if is_valid_oauth_client_id(env_id):
+            source = "environment variable (VYNTRA_GOOGLE_CLIENT_ID)"
+            if verbose_log:
+                logger.info("[OAuth] Configuration source: %s", source)
+                logger.info("[OAuth] Client ID loaded: %s", mask_client_id(env_id))
+                logger.info("[OAuth] Client type: Desktop (RFC 8252)")
+            return env_id, env_secret, "Environment", source
+        else:
+            logger.warning(
+                "[OAuth] Environment variable VYNTRA_GOOGLE_CLIENT_ID contains invalid/mock ID: %s. Falling back to built-in client.",
+                mask_client_id(env_id),
+            )
 
     # 2. Check JSON files in candidate locations
     candidate_paths = get_candidate_credential_paths()
@@ -164,13 +197,19 @@ def load_developer_oauth_client(verbose_log: bool = False) -> Tuple[str, str, st
                 client_secret = info.get("client_secret", "").strip()
                 project_id = info.get("project_id", "vyntra-desktop")
 
-                if client_id and not client_id.startswith("YOUR_GOOGLE_CLOUD"):
+                if is_valid_oauth_client_id(client_id):
                     source = f"file ({p.name})"
                     if verbose_log:
                         logger.info("[OAuth] Configuration source: %s [%s]", source, p)
                         logger.info("[OAuth] Client ID loaded: %s", mask_client_id(client_id))
                         logger.info("[OAuth] Client type: Desktop (RFC 8252)")
                     return client_id, client_secret, project_id, source
+                elif client_id:
+                    logger.warning(
+                        "[OAuth] Ignoring file %s due to invalid/mock client ID: %s",
+                        p,
+                        mask_client_id(client_id),
+                    )
         except Exception as e:
             logger.debug("Could not read credentials from %s: %s", p, e)
 

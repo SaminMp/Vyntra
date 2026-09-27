@@ -116,13 +116,35 @@ class VideoPlayerModal(ctk.CTkToplevel):
         self.video_label.bind("<Button-1>", lambda e: self._toggle_play_pause())
         self.video_label.bind("<Double-Button-1>", lambda e: self._toggle_fullscreen())
 
+        # Status / Error Overlay Frame
+        self.status_frame = ctk.CTkFrame(self.video_container, fg_color="transparent")
+        self.status_frame.grid(row=0, column=0)
+        self.status_frame.grid_columnconfigure(0, weight=1)
+
         self.loading_label = ctk.CTkLabel(
-            self.video_container,
+            self.status_frame,
             text="Loading video...",
             font=Theme.FONT_HEADER,
             text_color=Theme.TEXT_MUTED,
+            wraplength=480,
+            justify="center",
         )
-        self.loading_label.grid(row=0, column=0)
+        self.loading_label.grid(row=0, column=0, pady=(0, 12))
+
+        self.retry_btn = ctk.CTkButton(
+            self.status_frame,
+            text="↻ Retry",
+            font=Theme.FONT_BODY_BOLD,
+            width=120,
+            height=36,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.PRIMARY,
+            hover_color=Theme.PRIMARY_HOVER,
+            command=self._on_retry,
+        )
+        self.retry_btn.grid(row=1, column=0)
+        self.retry_btn.grid_remove()
+        self.retry_button = self.retry_btn  # Compatibility alias
 
         # 3. Bottom Controls Bar
         self.bottom_bar = ctk.CTkFrame(self, fg_color=Theme.BG_CARD, corner_radius=0)
@@ -256,6 +278,45 @@ class VideoPlayerModal(ctk.CTkToplevel):
         )
         self.mute_btn.pack(side="right", padx=(0, 4))
 
+    def _show_loading(self, text: str = "Loading video..."):
+        """Displays loading indicator and hides the retry button."""
+        self.loading_label.configure(text=text, text_color=Theme.TEXT_MUTED)
+        self.loading_label.grid(row=0, column=0, pady=(0, 12))
+        self.retry_btn.grid_remove()
+        self.status_frame.grid(row=0, column=0)
+        self.status_frame.lift()
+
+    def _show_error(self, text: str = "Unable to play this video."):
+        """Displays error message and reveals the Retry button."""
+        self.loading_label.configure(text=text, text_color=Theme.ERROR)
+        self.loading_label.grid(row=0, column=0, pady=(0, 12))
+        self.retry_btn.grid(row=1, column=0)
+        self.retry_btn.lift()
+        self.status_frame.grid(row=0, column=0)
+        self.status_frame.lift()
+
+    def _hide_status(self):
+        """Hides the loading and error overlay completely once playback commences."""
+        self.retry_btn.grid_remove()
+        self.loading_label.grid_remove()
+        self.status_frame.grid_remove()
+
+    def _on_retry(self):
+        """Retries loading the current video, resetting error state and invalidating failure caches."""
+        if not self.result or self._is_closed:
+            return
+        logger.info("[Player] Retry button clicked for video %s", self.result.video_id)
+
+        try:
+            from vyntra.services.youtube_service import youtube_service
+            youtube_service.clear_failed_cache(self.result.video_id)
+            if self.result.url:
+                youtube_service.clear_failed_cache(self.result.url)
+        except Exception as err:
+            logger.debug("[Player] Could not clear failed cache on retry: %s", err)
+
+        self.load_video(self.result)
+
     def load_video(self, result: SearchResult):
         """Loads and begins playing a new video cleanly."""
         self.result = result
@@ -268,14 +329,12 @@ class VideoPlayerModal(ctk.CTkToplevel):
         self.seek_slider.set(0.0)
         self.time_label.configure(text=f"00:00 / {format_duration(self._duration)}")
 
-        self.loading_label.configure(text="Loading video...", text_color=Theme.TEXT_MUTED)
-        self.loading_label.grid(row=0, column=0)
-        self.loading_label.lift()
+        self._show_loading("Loading video...")
 
         self._session_id += 1
         current_session = self._session_id
 
-        logger.info("[Player] Starting playback for %s (session %d)", result.video_id, current_session)
+        logger.info("[Player] Playback requested for %s (session %d)", result.video_id, current_session)
         logger.info("[Player] Extracting playable stream...")
 
         # Stop previous player if any
@@ -291,9 +350,18 @@ class VideoPlayerModal(ctk.CTkToplevel):
             if not self._is_closed and current_session == self._session_id:
                 sanitized_err = str(err)
                 logger.error("[Player] Stream extraction failed: %s", sanitized_err)
-                self.after(0, lambda: self.loading_label.configure(
-                    text="Unable to play this video.", text_color=Theme.ERROR
-                ))
+                def _show_err():
+                    if not self._is_closed and current_session == self._session_id:
+                        if self._scheduled_render_id:
+                            try:
+                                self.after_cancel(self._scheduled_render_id)
+                            except Exception:
+                                pass
+                            self._scheduled_render_id = None
+                        self._is_render_loop_running = False
+                        err_text = f"Unable to play this video:\n{sanitized_err}" if len(sanitized_err) < 80 else "Unable to play this video."
+                        self._show_error(err_text)
+                self.after(0, _show_err)
 
         stream_service.prepare_video_for_playback(
             result=result,
@@ -306,9 +374,10 @@ class VideoPlayerModal(ctk.CTkToplevel):
             return
         if not MediaPlayer:
             logger.error("[Player] Media player backend unavailable")
-            self.loading_label.configure(text="Unable to play this video.", text_color=Theme.ERROR)
+            self._show_error("Unable to play this video.")
             return
 
+        logger.info("[Player] Starting playback for %s (session %d)", self.result.video_id if self.result else "unknown", session_id)
         logger.info("[Player] Initializing media player")
         self._duration = duration or self._duration
         self.seek_slider.configure(to=max(1.0, float(self._duration)))
@@ -319,20 +388,35 @@ class VideoPlayerModal(ctk.CTkToplevel):
             "paused": False,
         }
 
-        try:
-            self._player = MediaPlayer(media_path, ff_opts=ff_opts)
-            self._player.set_volume(self.vol_slider.get())
-            self._is_paused = False
-            self.play_btn.configure(text="⏸ Pause")
-            logger.info("MediaPlayer initialized for media: %s", media_path)
+        def _init_worker():
+            try:
+                player = MediaPlayer(media_path, ff_opts=ff_opts)
+                if self._is_closed or (session_id != 0 and session_id != self._session_id):
+                    threading.Thread(target=player.close_player, daemon=True).start()
+                    return
 
-            # Start the render loop
-            self._is_render_loop_running = True
-            self.after(30, self._render_loop)
+                def _on_ready_ui():
+                    if self._is_closed or (session_id != 0 and session_id != self._session_id):
+                        threading.Thread(target=player.close_player, daemon=True).start()
+                        return
+                    self._player = player
+                    self._player.set_volume(self.vol_slider.get())
+                    self._is_paused = False
+                    self.play_btn.configure(text="⏸ Pause")
+                    logger.info("MediaPlayer initialized for media: %s", media_path)
 
-        except Exception as e:
-            logger.error("[Player] Failed to initialize MediaPlayer: %s", e)
-            self.loading_label.configure(text="Unable to play this video.", text_color=Theme.ERROR)
+                    # Start the render loop
+                    self._is_render_loop_running = True
+                    self.after(30, self._render_loop)
+
+                self.after(0, _on_ready_ui)
+
+            except Exception as e:
+                logger.error("[Player] Failed to initialize MediaPlayer: %s", e)
+                if not self._is_closed and (session_id == 0 or session_id == self._session_id):
+                    self.after(0, lambda: self._show_error("Unable to play this video."))
+
+        threading.Thread(target=_init_worker, daemon=True, name="MediaPlayerStartupWorker").start()
 
     def _ensure_render_loop_running(self):
         """Ensures the rendering loop is active if it had stopped on EOF or pause."""
@@ -357,15 +441,38 @@ class VideoPlayerModal(ctk.CTkToplevel):
         target_w = max(10, int(orig_w * scale))
         target_h = max(10, int(orig_h * scale))
 
+        # Check player state
+        if hasattr(self._player, "get_state"):
+            player_state = self._player.get_state()
+            if player_state.value == "error":
+                logger.error("[Player] Video player entered ERROR state.")
+                self._show_error("Unable to play this video.")
+                self._is_render_loop_running = False
+                self._scheduled_render_id = None
+                return
+            elif player_state.value == "buffering":
+                if not self.loading_label.winfo_ismapped():
+                    self._show_loading("Buffering...")
+                self._is_render_loop_running = True
+                self._scheduled_render_id = self.after(30, self._render_loop)
+                return
+
         # Pull frame scaled directly via SIMD in C (taking <1ms)
         frame_res, delay = self._player.get_frame(target_w=target_w, target_h=target_h)
         next_delay_ms = delay if isinstance(delay, (int, float)) else 16.0
+
+        if delay == "error":
+            logger.error("[Player] Video player returned ERROR on frame retrieval.")
+            self._show_error("Unable to play this video.")
+            self._is_render_loop_running = False
+            self._scheduled_render_id = None
+            return
 
         if frame_res:
             if not self._has_logged_playback_started:
                 self._has_logged_playback_started = True
                 logger.info("[Player] Playback started")
-                self.loading_label.grid_remove()
+            self._hide_status()
 
             img_wrapper, pts = frame_res
             if hasattr(img_wrapper, "to_pil_image"):
@@ -488,7 +595,7 @@ class VideoPlayerModal(ctk.CTkToplevel):
             self.close()
 
     def _stop_current_player(self):
-        """Stops active player instance and cancels pending render loop callbacks."""
+        """Stops active player instance and cancels pending render loop callbacks asynchronously."""
         if self._scheduled_render_id:
             try:
                 self.after_cancel(self._scheduled_render_id)
@@ -498,11 +605,13 @@ class VideoPlayerModal(ctk.CTkToplevel):
         self._is_render_loop_running = False
 
         if self._player:
-            try:
-                self._player.close_player()
-            except Exception:
-                pass
+            player_to_close = self._player
             self._player = None
+            threading.Thread(
+                target=player_to_close.close_player,
+                daemon=True,
+                name="PlayerTeardownWorker"
+            ).start()
 
     def close(self):
         """Closes player modal and frees resources cleanly."""

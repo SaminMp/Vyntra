@@ -42,12 +42,9 @@ class TestYouTubeServiceOptions(unittest.TestCase):
         opts = self.service.get_base_ydl_options(purpose="probe")
         self.assertIn("extractor_args", opts)
         self.assertIn("youtube", opts["extractor_args"])
-        self.assertIn("player_client", opts["extractor_args"]["youtube"])
-        self.assertIn("fetch_pot", opts["extractor_args"]["youtube"])
-        self.assertEqual(opts["extractor_args"]["youtube"]["fetch_pot"], ["auto"])
-
         clients = opts["extractor_args"]["youtube"]["player_client"]
-        self.assertEqual(clients, ["mweb", "web_embedded", "visionos"])
+        self.assertEqual(clients, ["web_embedded", "default"])
+        self.assertEqual(opts["extractor_args"]["youtube"]["fetch_pot"], ["always"])
 
         # When explicit cookies are present, authed clients are used
         with patch.object(self.service, "is_cookies_available", return_value=True):
@@ -104,12 +101,23 @@ class TestYouTubeServicePOToken(unittest.TestCase):
     def setUp(self):
         self.service = YouTubeService()
 
-    def test_po_token_provider_active(self):
-        """Verifies native Vyntra PO Token Provider is active and reporting."""
+    def test_po_token_provider_reporting(self):
+        """Verifies PO Token reports Vyntra Native PO Token Provider when active."""
         provider, is_gen, is_att = self.service.get_po_token_info()
         self.assertTrue(is_gen)
         self.assertTrue(is_att)
-        self.assertIn("PO Token Provider", provider)
+        self.assertEqual(provider, "Vyntra Native PO Token Provider")
+
+    def test_po_token_manual_file_detected(self):
+        """Verifies manual po_token.json file is detected if provided by user."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir) / "po_token.json"
+            tmp_path.write_text(json.dumps({"po_token": "manual_test_token"}))
+            with patch("vyntra.config.config_manager.config_dir", Path(tmp_dir)):
+                provider, is_gen, is_att = self.service.get_po_token_info()
+                self.assertTrue(is_gen)
+                self.assertTrue(is_att)
+                self.assertIn("Manual PO Token", provider)
 
 
 class TestYouTubeServiceMultiStrategyFallback(unittest.TestCase):
@@ -251,6 +259,43 @@ class TestYouTubeServiceDiagnostics(unittest.TestCase):
         self.assertNotIn("secret", report.lower())
         self.assertNotIn("Bearer", report)
         self.assertNotIn("ya29.", report)
+
+
+class TestYouTubeServiceDuplicateExtraction(unittest.TestCase):
+    """Verifies duplicate extractions are eliminated across probe and playback workflows."""
+
+    def setUp(self):
+        self.service = YouTubeService()
+        self.service._media_info_cache.clear()
+        self.service._failed_cache.clear()
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_probe_then_playback_reuses_cache(self, mock_ydl_class):
+        """Verifies that format probe followed by playback extraction invokes yt-dlp only ONCE."""
+        mock_instance = MagicMock()
+        mock_ydl_class.return_value.__enter__.return_value = mock_instance
+        mock_instance.extract_info.return_value = {
+            "title": "Cached Stream Video",
+            "duration": 180,
+            "formats": [
+                {"format_id": "18", "height": 360, "vcodec": "avc1", "acodec": "mp4a", "url": "https://googlevideo.com/18"},
+                {"format_id": "136", "height": 720, "vcodec": "avc1", "acodec": "none", "url": "https://googlevideo.com/136"},
+            ],
+        }
+
+        url = "https://www.youtube.com/watch?v=test_dedup_123"
+
+        # 1. Format probe
+        resolutions, err = self.service.get_available_resolutions(url)
+        self.assertIsNone(err)
+        self.assertIn("360p", resolutions)
+        self.assertEqual(mock_instance.extract_info.call_count, 1)
+
+        # 2. Playback stream extraction for same video ID
+        info = self.service.extract_info_with_fallback(url, purpose="playback")
+        self.assertEqual(info["title"], "Cached Stream Video")
+        # Call count should STILL be 1 because it hit the verified cache!
+        self.assertEqual(mock_instance.extract_info.call_count, 1)
 
 
 if __name__ == "__main__":

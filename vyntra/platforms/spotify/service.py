@@ -448,6 +448,8 @@ class SpotifyPlatform(BasePlatformService):
                 "audio_url": preview,
                 "headers": {"User-Agent": "Mozilla/5.0"},
                 "duration_seconds": 30,
+                "preview_duration": 30,
+                "is_preview": True,
             }
 
         raise RuntimeError(
