@@ -18,7 +18,7 @@ class YouTubePlatform(BasePlatformService):
     """Platform service managing YouTube media extraction, search, and download configuration."""
 
     YOUTUBE_URL_REGEX = re.compile(
-        r"^(https?://)?(www\.|m\.)?(youtube\.com/(watch\?v=|shorts/|embed/)|youtu\.be/)([a-zA-Z0-9_-]{11})"
+        r"^(https?://)?(www\.|m\.)?(youtube\.com/(watch\?v=|shorts/|embed/|playlist\?)|youtu\.be/)([a-zA-Z0-9_-]+)"
     )
 
     @property
@@ -44,7 +44,10 @@ class YouTubePlatform(BasePlatformService):
     def can_handle_url(self, url: str) -> bool:
         if not url:
             return False
-        return bool(self.YOUTUBE_URL_REGEX.search(url.strip()))
+        clean = url.strip()
+        if search_service.is_youtube_playlist_url(clean):
+            return True
+        return bool(self.YOUTUBE_URL_REGEX.search(clean))
 
     def search(self, query: str, max_results: int = 12) -> List[MediaItem]:
         results = search_service.search(query=query, max_results=max_results)

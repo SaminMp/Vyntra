@@ -145,6 +145,84 @@ class FFmpegService:
             install_guide=guide,
         )
 
+    def inspect_media_file(self, file_path: str) -> dict:
+        """
+        Inspects resulting media file properties to verify height, resolution, and codecs.
+        Returns a dictionary with width, height, resolution, video_codec, audio_codec,
+        container, has_video, and has_audio.
+        """
+        info = {
+            "width": 0,
+            "height": 0,
+            "resolution": "",
+            "video_codec": "",
+            "audio_codec": "",
+            "container": "",
+            "has_video": False,
+            "has_audio": False,
+        }
+        p = Path(file_path)
+        if not p.is_file():
+            return info
+
+        info["container"] = p.suffix.lstrip(".").lower()
+
+        # 1. Try PyAV inspection
+        try:
+            import av
+            with av.open(str(p)) as container:
+                if container.format and container.format.name:
+                    info["container"] = container.format.name.split(",")[0]
+                if container.streams.video:
+                    v = container.streams.video[0]
+                    info["has_video"] = True
+                    info["width"] = v.width or 0
+                    info["height"] = v.height or 0
+                    if v.width and v.height:
+                        info["resolution"] = f"{v.width}x{v.height}"
+                    if v.codec_context and v.codec_context.name:
+                        info["video_codec"] = v.codec_context.name
+                if container.streams.audio:
+                    info["has_audio"] = True
+                    a = container.streams.audio[0]
+                    if a.codec_context and a.codec_context.name:
+                        info["audio_codec"] = a.codec_context.name
+            return info
+        except Exception as av_err:
+            logger.debug("[FFmpeg] PyAV media inspection exception: %s", av_err)
+
+        # 2. Fallback to ffprobe if available
+        status = self.get_status()
+        if status.ffprobe_path and os.path.isfile(status.ffprobe_path):
+            try:
+                import json
+                cmd = [
+                    status.ffprobe_path,
+                    "-v", "quiet",
+                    "-print_format", "json",
+                    "-show_streams",
+                    str(p),
+                ]
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                if res.returncode == 0:
+                    data = json.loads(res.stdout)
+                    for stream in data.get("streams", []):
+                        codec_type = stream.get("codec_type")
+                        if codec_type == "video" and not info["has_video"]:
+                            info["has_video"] = True
+                            info["width"] = int(stream.get("width") or 0)
+                            info["height"] = int(stream.get("height") or 0)
+                            if info["width"] and info["height"]:
+                                info["resolution"] = f"{info['width']}x{info['height']}"
+                            info["video_codec"] = stream.get("codec_name") or ""
+                        elif codec_type == "audio" and not info["has_audio"]:
+                            info["has_audio"] = True
+                            info["audio_codec"] = stream.get("codec_name") or ""
+            except Exception as probe_err:
+                logger.debug("[FFmpeg] ffprobe inspection fallback exception: %s", probe_err)
+
+        return info
+
 
 # Global singleton instance
 ffmpeg_service = FFmpegService()

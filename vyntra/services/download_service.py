@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import threading
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 import yt_dlp
 
 from vyntra.config import config_manager
@@ -293,8 +293,62 @@ class DownloadService:
                 expected_output = unique_file_path.resolve()
 
         logger.info("[Download] Actual output file: %s", expected_output)
+
+        # Media output verification
+        self._verify_downloaded_media(task, str(expected_output))
+
         logger.info("Download completed successfully: %s", expected_output)
         return str(expected_output)
+
+    def _verify_downloaded_media(
+        self,
+        task: DownloadTask,
+        output_path: str,
+        available_formats: Optional[List[str]] = None,
+    ) -> None:
+        """Verifies media properties using ffmpeg_service and validates target resolution."""
+        out_str = str(output_path)
+        if not Path(out_str).is_file():
+            return
+
+        media_info = ffmpeg_service.inspect_media_file(out_str)
+        task.actual_resolution = media_info.get("resolution") or ""
+        task.actual_height = media_info.get("height") or 0
+        task.actual_width = media_info.get("width") or 0
+        task.video_codec = media_info.get("video_codec") or ""
+        task.audio_codec = media_info.get("audio_codec") or ""
+        task.is_verified = True
+
+        logger.info(
+            "[Download] Media verified: resolution=%s (%sp), video_codec=%s, audio=%s (%s), container=%s",
+            task.actual_resolution or "audio-only",
+            task.actual_height or "N/A",
+            task.video_codec or "none",
+            "present" if media_info.get("has_audio") else "none",
+            task.audio_codec or "none",
+            media_info.get("container") or "unknown",
+        )
+
+        if task.format == MediaFormat.MP4:
+            raw_q = str(getattr(task, "selected_quality", "") or getattr(task.video_quality, "value", "")).lower()
+            height_match = re.search(r"(\d{3,4})", raw_q)
+            target_height = int(height_match.group(1)) if height_match else None
+            if target_height and task.actual_height and task.actual_height < target_height:
+                # Check if requested target_height was available in source
+                try:
+                    if available_formats is not None:
+                        avail_res = available_formats
+                    else:
+                        avail_res, _ = youtube_service.get_available_resolutions(task.result.url or task.result.video_id)
+                    has_target = any(str(target_height) in r for r in avail_res)
+                    if has_target:
+                        raise RuntimeError(
+                            f"Resolution mismatch: Requested {target_height}p was available, but downloaded file is {task.actual_height}p ({task.actual_resolution})."
+                        )
+                except RuntimeError:
+                    raise
+                except Exception as verify_err:
+                    logger.debug("Resolution check during verification skipped: %s", verify_err)
 
     def _cleanup_temp_files(self, task: DownloadTask) -> None:
         """Removes leftover .part, .ytdl, or intermediate files for a task."""

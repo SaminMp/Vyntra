@@ -921,17 +921,17 @@ class YouTubeService:
             if ffmpeg_status.is_available:
                 if target_height:
                     format_spec = (
-                        f"bestvideo[height<={target_height}][ext=mp4]+bestaudio[ext=m4a]/"
+                        f"bestvideo[height={target_height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+                        f"bestvideo[height={target_height}]+bestaudio/"
+                        f"best[height={target_height}]/"
                         f"bestvideo[height<={target_height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
                         f"bestvideo[height<={target_height}]+bestaudio/"
-                        f"best[height<={target_height}][ext=mp4]/"
                         f"best[height<={target_height}]/best"
                     )
                 else:
                     format_spec = (
-                        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
                         "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
-                        "bestvideo+bestaudio/best[ext=mp4]/best"
+                        "bestvideo+bestaudio/best"
                     )
 
                 ydl_opts.update({
@@ -946,9 +946,12 @@ class YouTubeService:
                 })
             else:
                 if target_height:
-                    ydl_opts["format"] = f"best[height<={target_height}][ext=mp4]/best[height<={target_height}]/best"
+                    ydl_opts["format"] = (
+                        f"best[height={target_height}]/"
+                        f"best[height<={target_height}]/best"
+                    )
                 else:
-                    ydl_opts["format"] = "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
+                    ydl_opts["format"] = "best[ext=mp4]/best"
 
         return ydl_opts
 

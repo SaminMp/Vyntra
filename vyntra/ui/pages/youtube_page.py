@@ -46,6 +46,7 @@ class YouTubePage(BasePlatformPage):
             on_result_selected=self._handle_result_selected,
             on_preview=self._handle_preview,
             on_watch_later_changed=self.app._update_watch_later_badge,
+            on_download_selection_changed=self._handle_download_selection_changed,
         )
         self.results_list.grid(row=2, column=0, sticky="nsew", padx=16, pady=4)
 
@@ -103,6 +104,7 @@ class YouTubePage(BasePlatformPage):
         if not self.is_generation_current(generation):
             return
         self.search_bar.set_loading(False)
+        self.download_panel.set_batch_selected_items([])
         self.results_list.display_results(results)
 
     def _display_error(self, err: Exception, generation: int):
@@ -114,6 +116,9 @@ class YouTubePage(BasePlatformPage):
 
     def _handle_result_selected(self, result: MediaItem):
         self.download_panel.set_selected_result(result)
+
+    def _handle_download_selection_changed(self, selected_items: List[SearchResult]):
+        self.download_panel.set_batch_selected_items(selected_items)
 
     def _handle_preview(self, result: MediaItem):
         self.app._handle_play_video(result)

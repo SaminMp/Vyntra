@@ -98,6 +98,11 @@ class MediaItem:
     preview_url: Optional[str] = None
     audio_source_url: Optional[str] = None
 
+    # Per-video download configuration & selection state
+    selected_for_download: bool = False
+    download_format: MediaFormat = MediaFormat.MP4
+    download_quality: str = "720p"
+
     @property
     def display_title(self) -> str:
         """Returns clean title without leading/trailing whitespace."""
@@ -137,6 +142,12 @@ class DownloadTask:
     output_filepath: Optional[str] = None
     error_message: Optional[str] = None
     is_cancelled: bool = False
+    actual_resolution: Optional[str] = None
+    actual_height: Optional[int] = None
+    actual_width: Optional[int] = None
+    video_codec: Optional[str] = None
+    audio_codec: Optional[str] = None
+    is_verified: bool = False
 
     def __post_init__(self):
         # Auto-inherit platform from result if not explicitly overridden

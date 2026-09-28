@@ -51,6 +51,7 @@ class DownloadPanel(ctk.CTkFrame):
         self.on_download = on_download
         self.on_cancel = on_cancel
         self.selected_result: Optional[SearchResult] = None
+        self._batch_items: List[SearchResult] = []
         self._is_downloading = False
         self._cached_video_resolutions: List[str] = list(DEFAULT_VIDEO_QUALITY_OPTIONS)
         self._probe_error_message: Optional[str] = None
@@ -335,12 +336,26 @@ class DownloadPanel(ctk.CTkFrame):
 
         self._update_download_button_text()
 
+    def set_batch_selected_items(self, items: List[SearchResult]):
+        """Updates the list of results checked for batch download."""
+        self._batch_items = list(items)
+        self._update_download_button_text()
+
     def _on_quality_changed(self, value: str):
         self._update_download_button_text()
 
     def _update_download_button_text(self):
         if self._is_downloading:
             self.download_btn.configure(text="Downloading...", state="normal")
+            return
+
+        if self._batch_items:
+            count = len(self._batch_items)
+            self.download_btn.configure(
+                text=f"⬇ Download {count} Selected Video{'s' if count > 1 else ''}",
+                state="normal",
+            )
+            self.selected_title_label.configure(text=f"{count} videos selected for download")
             return
 
         fmt = self.format_segmented.get()
@@ -355,8 +370,16 @@ class DownloadPanel(ctk.CTkFrame):
             return
 
         self.download_btn.configure(state="normal" if self.selected_result else "disabled")
-        q_preview = q.split()[0] if q else ""
-        self.download_btn.configure(text=f"⬇ Download {fmt} ({q_preview})")
+        if self.selected_result:
+            self.selected_title_label.configure(text=self.selected_result.display_title)
+            card_fmt = getattr(self.selected_result, "download_format", None)
+            card_q = getattr(self.selected_result, "download_quality", None)
+            fmt_str = card_fmt.value if (card_fmt and hasattr(card_fmt, "value")) else fmt
+            q_str = (card_q or q).split()[0]
+            self.download_btn.configure(text=f"⬇ Download Video ({fmt_str} {q_str})")
+        else:
+            self.selected_title_label.configure(text="No video selected")
+            self.download_btn.configure(text="⬇ Download Video")
 
     def _browse_directory(self):
         chosen = filedialog.askdirectory(
@@ -415,19 +438,45 @@ class DownloadPanel(ctk.CTkFrame):
             self._update_download_button_text()
 
     def _handle_download(self):
-        if self._is_downloading or not self.selected_result:
+        if self._is_downloading:
             return
+        if not self._batch_items and not self.selected_result:
+            return
+
         chosen_dir = self.get_save_directory()
         if chosen_dir:
             config_manager.update(download_directory=chosen_dir)
         self.set_downloading(True)
+
         if self.on_download:
-            self.on_download(
-                self.selected_result,
-                self.get_selected_format(),
-                self.get_selected_quality(),
-                chosen_dir,
-            )
+            if self._batch_items:
+                primary = self._batch_items[0]
+                primary_fmt = getattr(primary, "download_format", self.get_selected_format())
+                primary_q = getattr(primary, "download_quality", self.get_selected_quality())
+                try:
+                    self.on_download(
+                        primary,
+                        primary_fmt,
+                        primary_q,
+                        chosen_dir,
+                        batch_items=self._batch_items,
+                    )
+                except TypeError:
+                    self.on_download(
+                        primary,
+                        primary_fmt,
+                        primary_q,
+                        chosen_dir,
+                    )
+            else:
+                card_fmt = getattr(self.selected_result, "download_format", self.get_selected_format())
+                card_q = getattr(self.selected_result, "download_quality", self.get_selected_quality())
+                self.on_download(
+                    self.selected_result,
+                    card_fmt,
+                    card_q,
+                    chosen_dir,
+                )
 
     def _handle_cancel(self):
         if self.on_cancel:

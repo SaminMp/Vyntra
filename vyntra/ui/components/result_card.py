@@ -5,7 +5,7 @@ Interactive search result card component with thumbnail, metadata, and selection
 from typing import Callable, Optional
 import customtkinter as ctk
 
-from vyntra.models import SearchResult
+from vyntra.models import MediaFormat, SearchResult
 from vyntra.services.image_service import image_service
 from vyntra.services.watch_later_service import watch_later_service
 from vyntra.ui.theme import Theme
@@ -23,6 +23,7 @@ class ResultCard(ctk.CTkFrame):
         on_select: Callable[[SearchResult], None],
         on_preview: Optional[Callable[[SearchResult], None]] = None,
         on_watch_later_changed: Optional[Callable[[], None]] = None,
+        on_download_config_changed: Optional[Callable[[SearchResult], None]] = None,
         **kwargs,
     ):
         super().__init__(
@@ -39,6 +40,7 @@ class ResultCard(ctk.CTkFrame):
         self.on_select = on_select
         self.on_preview = on_preview
         self.on_watch_later_changed = on_watch_later_changed
+        self.on_download_config_changed = on_download_config_changed
         self._is_selected = False
         self._is_compact_layout: Optional[bool] = None
 
@@ -118,23 +120,23 @@ class ResultCard(ctk.CTkFrame):
         )
         self.meta_label.grid(row=2, column=0, sticky="w")
 
-        # 3. Action Buttons (Preview, Watch Later, Select)
+        # 3. Action Buttons & Per-Card Download Controls
         self.action_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.action_frame.grid(row=0, column=2, padx=(6, 14), pady=10, sticky="e")
 
-        # Play Video Button
+        # Row 0: Play Video Button
         self.preview_btn = ctk.CTkButton(
             self.action_frame,
             text="▶ Play Video",
             font=Theme.FONT_CAPTION,
             width=90,
-            height=32,
+            height=30,
             corner_radius=Theme.RADIUS_BUTTON,
             fg_color=Theme.BG_MUTED,
             hover_color=Theme.ACCENT_CYAN,
             command=self._handle_preview,
         )
-        self.preview_btn.pack(side="left", padx=(0, 6))
+        self.preview_btn.grid(row=0, column=0, padx=(0, 6), pady=(0, 2))
 
         # Watch Later Button
         is_saved = watch_later_service.is_saved(self.result.video_id)
@@ -143,13 +145,13 @@ class ResultCard(ctk.CTkFrame):
             text="✓ Saved" if is_saved else "♡ Watch Later",
             font=Theme.FONT_CAPTION,
             width=96,
-            height=32,
+            height=30,
             corner_radius=Theme.RADIUS_BUTTON,
             fg_color=Theme.BG_MUTED,
             hover_color=Theme.PRIMARY if not is_saved else Theme.BG_CARD_HOVER,
             command=self._handle_watch_later,
         )
-        self.watch_later_btn.pack(side="left", padx=(0, 6))
+        self.watch_later_btn.grid(row=0, column=1, padx=(0, 6), pady=(0, 2))
 
         # Select Button
         self.select_btn = ctk.CTkButton(
@@ -157,13 +159,70 @@ class ResultCard(ctk.CTkFrame):
             text="Select",
             font=Theme.FONT_CAPTION,
             width=70,
-            height=32,
+            height=30,
             corner_radius=Theme.RADIUS_BUTTON,
             fg_color=Theme.BG_MUTED,
             hover_color=Theme.PRIMARY_HOVER,
             command=self._handle_click,
         )
-        self.select_btn.pack(side="left")
+        self.select_btn.grid(row=0, column=2, pady=(0, 2))
+
+        # Row 1: Per-Card Download Controls (Checkbox, Format menu, Quality menu)
+        self.download_checkbox = ctk.CTkCheckBox(
+            self.action_frame,
+            text="Download",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_SECONDARY,
+            fg_color=Theme.PRIMARY,
+            hover_color=Theme.PRIMARY_HOVER,
+            checkmark_color="#FFFFFF",
+            width=88,
+            height=26,
+            checkbox_width=18,
+            checkbox_height=18,
+            command=self._on_download_checked,
+        )
+        self.download_checkbox.grid(row=1, column=0, padx=(0, 6), pady=(6, 0), sticky="w")
+        if getattr(self.result, "selected_for_download", False):
+            self.download_checkbox.select()
+        else:
+            self.download_checkbox.deselect()
+
+        initial_format = getattr(self.result, "download_format", MediaFormat.MP4)
+        initial_fmt_val = initial_format.value if hasattr(initial_format, "value") else str(initial_format)
+
+        self.format_menu = ctk.CTkOptionMenu(
+            self.action_frame,
+            values=["MP4", "MP3"],
+            font=Theme.FONT_CAPTION,
+            width=72,
+            height=26,
+            fg_color=Theme.BG_MUTED,
+            button_color=Theme.PRIMARY,
+            button_hover_color=Theme.PRIMARY_HOVER,
+            dropdown_fg_color=Theme.BG_CARD,
+            command=self._on_format_changed,
+        )
+        self.format_menu.set(initial_fmt_val)
+        self.format_menu.grid(row=1, column=1, padx=(0, 6), pady=(6, 0), sticky="ew")
+
+        quality_values = ["1080p", "720p", "480p", "360p"] if initial_fmt_val == "MP4" else ["320 kbps", "256 kbps", "192 kbps", "128 kbps"]
+        initial_quality = getattr(self.result, "download_quality", "720p" if initial_fmt_val == "MP4" else "320 kbps")
+
+        self.quality_menu = ctk.CTkOptionMenu(
+            self.action_frame,
+            values=quality_values,
+            font=Theme.FONT_CAPTION,
+            width=82,
+            height=26,
+            fg_color=Theme.BG_MUTED,
+            button_color=Theme.PRIMARY,
+            button_hover_color=Theme.PRIMARY_HOVER,
+            dropdown_fg_color=Theme.BG_CARD,
+            command=self._on_quality_changed,
+        )
+        self.quality_menu.set(initial_quality)
+        self.quality_menu.grid(row=1, column=2, pady=(6, 0), sticky="ew")
 
         # Bind hover and click events across all child widgets
         self._bind_events([
@@ -284,3 +343,35 @@ class ResultCard(ctk.CTkFrame):
                 self.watch_later_btn.configure(text="✓ Saved")
                 if self.on_watch_later_changed:
                     self.on_watch_later_changed()
+
+    def _on_download_checked(self):
+        is_checked = bool(self.download_checkbox.get())
+        self.result.selected_for_download = is_checked
+        if self.on_download_config_changed:
+            self.on_download_config_changed(self.result)
+
+    def _on_format_changed(self, value: str):
+        if value == "MP3":
+            self.result.download_format = MediaFormat.MP3
+            self.quality_menu.configure(values=["320 kbps", "256 kbps", "192 kbps", "128 kbps"])
+            self.quality_menu.set("320 kbps")
+            self.result.download_quality = "320 kbps"
+        else:
+            self.result.download_format = MediaFormat.MP4
+            self.quality_menu.configure(values=["1080p", "720p", "480p", "360p"])
+            self.quality_menu.set("720p")
+            self.result.download_quality = "720p"
+        if self.on_download_config_changed:
+            self.on_download_config_changed(self.result)
+
+    def _on_quality_changed(self, value: str):
+        self.result.download_quality = value
+        if self.on_download_config_changed:
+            self.on_download_config_changed(self.result)
+
+    def set_download_checked(self, checked: bool):
+        self.result.selected_for_download = checked
+        if checked:
+            self.download_checkbox.select()
+        else:
+            self.download_checkbox.deselect()

@@ -19,6 +19,10 @@ YOUTUBE_URL_PATTERNS = [
     re.compile(r'^(https?://)?(www\.)?youtu\.be/([^&=%\?]{11})'),
 ]
 
+PLAYLIST_PATTERN = re.compile(
+    r'^(https?://)?(www\.|m\.)?(youtube\.com|youtu\.be)/.*[?&]list=([a-zA-Z0-9_-]+)'
+)
+
 
 import threading
 
@@ -55,9 +59,16 @@ class SearchService:
         self.shutdown(wait=True)
         self._ensure_executor()
 
-    def is_youtube_url(self, query: str) -> bool:
-        """Checks whether the query is a direct YouTube video or shorts URL."""
+    def is_youtube_playlist_url(self, query: str) -> bool:
+        """Checks whether the query is a YouTube playlist URL."""
         cleaned = query.strip()
+        return bool(PLAYLIST_PATTERN.search(cleaned))
+
+    def is_youtube_url(self, query: str) -> bool:
+        """Checks whether the query is a direct YouTube video, shorts, or playlist URL."""
+        cleaned = query.strip()
+        if self.is_youtube_playlist_url(cleaned):
+            return True
         for pattern in YOUTUBE_URL_PATTERNS:
             if pattern.search(cleaned):
                 return True
@@ -68,7 +79,7 @@ class SearchService:
         Executes search or direct URL extraction synchronously.
 
         Args:
-            query: Free-text search terms or YouTube URL.
+            query: Free-text search terms, single YouTube URL, or YouTube playlist URL.
             max_results: Max items to return (defaults to config).
 
         Returns:
@@ -81,19 +92,28 @@ class SearchService:
         if max_results is None:
             max_results = config_manager.config.max_search_results
 
+        is_playlist = self.is_youtube_playlist_url(cleaned_query)
         is_direct_url = self.is_youtube_url(cleaned_query)
 
         # Use the unified yt-dlp options (SSL, proxy, user-agent, cookies) as base
         # to ensure consistent network behavior across all YouTube operations.
         ydl_opts = youtube_service.get_base_ydl_options(purpose="search")
-        ydl_opts.update({
-            "extract_flat": True if not is_direct_url else False,
-            "skip_download": True,
-            "ignoreerrors": True,
-        })
+        if is_playlist:
+            ydl_opts.update({
+                "extract_flat": "in_playlist",
+                "skip_download": True,
+                "ignoreerrors": True,
+            })
+            search_target = cleaned_query
+        else:
+            ydl_opts.update({
+                "extract_flat": True if not is_direct_url else False,
+                "skip_download": True,
+                "ignoreerrors": True,
+            })
+            search_target = cleaned_query if is_direct_url else f"ytsearch{max_results}:{cleaned_query}"
 
-        search_target = cleaned_query if is_direct_url else f"ytsearch{max_results}:{cleaned_query}"
-        logger.info("Executing YouTube search for: '%s' (Direct URL: %s)", cleaned_query, is_direct_url)
+        logger.info("Executing YouTube search for: '%s' (Direct URL: %s, Playlist: %s)", cleaned_query, is_direct_url, is_playlist)
 
         results: List[SearchResult] = []
 
@@ -103,13 +123,13 @@ class SearchService:
                 if not info:
                     return []
 
-                # If direct single video URL
+                # If direct single video URL without entries
                 if "entries" not in info:
                     parsed = self._parse_entry(info)
                     if parsed:
                         results.append(parsed)
                 else:
-                    for entry in info.get("entries", []):
+                    for entry in (info.get("entries") or []):
                         if entry:
                             parsed = self._parse_entry(entry)
                             if parsed:
@@ -150,6 +170,9 @@ class SearchService:
         if not video_id or not title:
             return None
 
+        if title.strip().lower() in ["[deleted video]", "[private video]", "deleted video", "private video"]:
+            return None
+
         # Resolve duration
         duration_secs = entry.get("duration") or 0
         if isinstance(duration_secs, float):
@@ -169,7 +192,11 @@ class SearchService:
         if not thumbnail_url:
             thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
-        url = entry.get("webpage_url") or entry.get("url") or f"https://www.youtube.com/watch?v=dQw4w9WgXcQ".replace("dQw4w9WgXcQ", video_id)
+        url = entry.get("webpage_url") or entry.get("url")
+        if url and not url.startswith("http"):
+            url = f"https://www.youtube.com/watch?v={url}"
+        elif not url:
+            url = f"https://www.youtube.com/watch?v={video_id}"
         description = entry.get("description") or ""
 
         return SearchResult(

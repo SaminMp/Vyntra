@@ -99,6 +99,9 @@ class VyntraApp(ctk.CTk):
         self._apply_window_icon()
 
         self._active_task_id: Optional[str] = None
+        self._download_queue: List[DownloadTask] = []
+        self._total_batch_count: int = 0
+        self._completed_batch_count: int = 0
         self._player_modal: Optional[VideoPlayerModal] = None
         self._audio_player_modal: Optional[Any] = None
         self._donation_modal: Optional[DonationModal] = None
@@ -569,38 +572,72 @@ class VyntraApp(ctk.CTk):
         media_format: MediaFormat,
         quality: str,
         save_dir: str,
+        batch_items: Optional[List[MediaItem]] = None,
     ):
-        """Dispatches download job across any supported platform."""
+        """Dispatches download job or sequential batch queue across any supported platform."""
         if save_dir and Path(save_dir).exists():
             if str(Path(save_dir).resolve()) != str(Path(config_manager.config.download_directory).resolve()):
                 config_manager.update(download_directory=str(Path(save_dir).resolve()))
 
-        audio_q_str = config_manager.config.audio_quality
-        if media_format == MediaFormat.MP3 and quality:
-            audio_q_str = quality
+        items_to_download = batch_items if (batch_items and len(batch_items) > 0) else [result]
+        self._download_queue = []
+        self._total_batch_count = len(items_to_download)
+        self._completed_batch_count = 0
 
-        audio_quality = AudioQuality.BEST
-        if audio_q_str == "192":
-            audio_quality = AudioQuality.STANDARD
-        elif audio_q_str == "256":
-            audio_quality = AudioQuality.HIGH
+        for item in items_to_download:
+            item_format = getattr(item, "download_format", media_format)
+            item_quality = getattr(item, "download_quality", quality or "best")
 
-        task = DownloadTask(
-            result=result,
-            format=media_format,
-            save_directory=save_dir,
-            platform=getattr(result, "platform", "youtube"),
-            audio_quality=audio_quality,
-            selected_quality=quality or "best",
-        )
+            audio_q_str = config_manager.config.audio_quality
+            if item_format == MediaFormat.MP3 and item_quality:
+                audio_q_str = item_quality
+
+            audio_quality = AudioQuality.BEST
+            if "192" in audio_q_str:
+                audio_quality = AudioQuality.STANDARD
+            elif "256" in audio_q_str:
+                audio_quality = AudioQuality.HIGH
+
+            task = DownloadTask(
+                result=item,
+                format=item_format,
+                save_directory=save_dir,
+                platform=getattr(item, "platform", "youtube"),
+                audio_quality=audio_quality,
+                selected_quality=item_quality,
+            )
+            self._download_queue.append(task)
+
+        # Start downloading first task in queue
+        self._process_next_download_task()
+
+    def _process_next_download_task(self):
+        """Pops and starts the next queued download task, updating page downloading states."""
+        if not self._download_queue:
+            # All tasks finished
+            self._active_task_id = None
+            page = self._pages.get(self._current_platform)
+            if page and hasattr(page, "set_downloading"):
+                page.set_downloading(False)
+            if self._total_batch_count > 1 and self._completed_batch_count > 0:
+                self.status_banner.show_success(
+                    message=f"✓ Finished downloading {self._completed_batch_count} videos!",
+                    action_text="Open Folder",
+                    on_action=self._open_downloads_folder,
+                )
+                self._safe_after(800, lambda: self._maybe_prompt_donation(trigger="download"))
+            return
+
+        task = self._download_queue.pop(0)
         self._active_task_id = task.task_id
 
-        # Update downloading state on matching page
         page = self._pages.get(task.platform)
         if page and hasattr(page, "set_downloading"):
             page.set_downloading(True)
 
         def _on_progress(prog: ProgressInfo):
+            if self._total_batch_count > 1:
+                prog.status_message = f"[{self._completed_batch_count + 1}/{self._total_batch_count}] {task.result.display_title[:30]}... {prog.status_message}"
             self.after(0, lambda: self._update_active_progress(task.platform, prog))
 
         def _on_complete(output_path: str):
@@ -622,37 +659,47 @@ class VyntraApp(ctk.CTk):
             page.update_progress(prog)
 
     def _download_completed(self, task: DownloadTask, output_path: str):
-        page = self._pages.get(task.platform)
-        if page and hasattr(page, "set_downloading"):
-            page.set_downloading(False)
-        self._active_task_id = None
+        self._completed_batch_count += 1
         file_name = Path(output_path).name
 
-        self.status_banner.show_success(
-            message=f"✓ Downloaded: {file_name}",
-            action_text="Open Folder",
-            on_action=lambda: self._open_file_location(output_path, fallback_dir=task.save_directory),
-        )
+        if self._total_batch_count <= 1:
+            page = self._pages.get(task.platform)
+            if page and hasattr(page, "set_downloading"):
+                page.set_downloading(False)
+            self._active_task_id = None
 
-        # Trigger polite donation prompt if appropriate
-        self._safe_after(800, lambda: self._maybe_prompt_donation(trigger="download"))
+            self.status_banner.show_success(
+                message=f"✓ Downloaded: {file_name}",
+                action_text="Open Folder",
+                on_action=lambda: self._open_file_location(output_path, fallback_dir=task.save_directory),
+            )
+            self._safe_after(800, lambda: self._maybe_prompt_donation(trigger="download"))
+        else:
+            logger.info("Batch download completed %d/%d: %s", self._completed_batch_count, self._total_batch_count, file_name)
+            self._process_next_download_task()
 
     def _download_failed(self, task: DownloadTask, err: Exception):
-        page = self._pages.get(task.platform)
-        if page and hasattr(page, "set_downloading"):
-            page.set_downloading(False)
-        self._active_task_id = None
         err_msg = str(err)
-        if "Settings" in err_msg or "bot" in err_msg.lower() or "verification" in err_msg.lower():
-            self.status_banner.show_warning(
-                message=err_msg,
-                action_text="Open Settings",
-                on_action=self._open_settings,
-            )
+        logger.error("Download failed for task %s (%s): %s", task.task_id, task.result.display_title, err_msg)
+        if self._total_batch_count <= 1:
+            page = self._pages.get(task.platform)
+            if page and hasattr(page, "set_downloading"):
+                page.set_downloading(False)
+            self._active_task_id = None
+            if "Settings" in err_msg or "bot" in err_msg.lower() or "verification" in err_msg.lower():
+                self.status_banner.show_warning(
+                    message=err_msg,
+                    action_text="Open Settings",
+                    on_action=self._open_settings,
+                )
+            else:
+                self.status_banner.show_error(f"Download error: {err_msg}")
         else:
-            self.status_banner.show_error(f"Download error: {err_msg}")
+            self.status_banner.show_warning(f"Skipped failed video ({task.result.display_title[:25]}...): {err_msg}")
+            self._process_next_download_task()
 
     def _handle_cancel_download(self):
+        self._download_queue.clear()
         if self._active_task_id:
             download_service.cancel_download(self._active_task_id)
             self._active_task_id = None
