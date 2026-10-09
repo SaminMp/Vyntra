@@ -206,11 +206,13 @@ class DownloadPanel(ctk.CTkFrame):
             self.download_btn.configure(state="normal")
             self._cached_video_resolutions = []
 
-            # Asynchronously probe available resolutions for account restriction detection
-            search_service.get_available_resolutions_async(
-                result.url or result.video_id,
-                self._on_resolutions_probed,
-            )
+            # Asynchronously probe available resolutions for account restriction detection (video only)
+            card_fmt = getattr(result, "download_format", MediaFormat.MP4)
+            if card_fmt != MediaFormat.MP3:
+                search_service.get_available_resolutions_async(
+                    result.url or result.video_id,
+                    self._on_resolutions_probed,
+                )
         else:
             self.selected_title_label.configure(
                 text="No video selected",
@@ -241,6 +243,11 @@ class DownloadPanel(ctk.CTkFrame):
         """Programmatically updates format on the selected result and refreshes UI."""
         if self.selected_result:
             self.selected_result.download_format = media_format
+            if media_format != MediaFormat.MP3 and not self._cached_video_resolutions:
+                search_service.get_available_resolutions_async(
+                    self.selected_result.url or self.selected_result.video_id,
+                    self._on_resolutions_probed,
+                )
             self._update_download_button_text()
 
     def set_batch_selected_items(self, items: List[SearchResult]):
@@ -271,11 +278,13 @@ class DownloadPanel(ctk.CTkFrame):
 
             if self._cached_video_resolutions and self._cached_video_resolutions[0].startswith("["):
                 # Format probe indicated an account error or restriction
-                self.download_btn.configure(
-                    text=f"⚠️ {self._cached_video_resolutions[0]}",
-                    state="disabled",
-                )
-                return
+                is_restricted = "restricted" in self._cached_video_resolutions[0].lower()
+                if card_fmt != MediaFormat.MP3 or is_restricted:
+                    self.download_btn.configure(
+                        text=f"⚠️ {self._cached_video_resolutions[0]}",
+                        state="disabled",
+                    )
+                    return
 
             btn_label = f"⬇ Download Video ({fmt_str} {q_str})".strip()
             self.download_btn.configure(text=btn_label, state="normal")

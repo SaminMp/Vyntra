@@ -321,7 +321,8 @@ class TestPerCardControlsAndBatchSelection(unittest.TestCase):
         finally:
             root.destroy()
 
-    def test_download_panel_button_text_updates_dynamically(self):
+    @patch("vyntra.ui.components.download_panel.search_service.get_available_resolutions_async")
+    def test_download_panel_button_text_updates_dynamically(self, mock_probe):
         """Verifies DownloadPanel button reflects batch count or single card settings."""
         root = ctk.CTk()
         root.withdraw()
@@ -521,7 +522,8 @@ class TestFooterDecoupledFormatAndQuality(unittest.TestCase):
         finally:
             root.destroy()
 
-    def test_single_card_download_uses_card_format_and_quality(self):
+    @patch("vyntra.ui.components.download_panel.search_service.get_available_resolutions_async")
+    def test_single_card_download_uses_card_format_and_quality(self, mock_probe):
         root = ctk.CTk()
         root.withdraw()
         try:
@@ -562,7 +564,8 @@ class TestFooterDecoupledFormatAndQuality(unittest.TestCase):
         finally:
             root.destroy()
 
-    def test_batch_cards_download_respects_each_card_settings_independently(self):
+    @patch("vyntra.ui.components.download_panel.search_service.get_available_resolutions_async")
+    def test_batch_cards_download_respects_each_card_settings_independently(self, mock_probe):
         root = ctk.CTk()
         root.withdraw()
         try:
