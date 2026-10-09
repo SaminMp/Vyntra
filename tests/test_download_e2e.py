@@ -10,11 +10,12 @@ import unittest
 
 from vyntra.models import DownloadStatus, DownloadTask, MediaFormat, ProgressInfo, SearchResult
 from vyntra.services.download_service import download_service
-
+from vyntra.services.ffmpeg_service import ffmpeg_service
 
 class TestDownloadIntegration(unittest.TestCase):
     """Integration test verifying end-to-end media download and callbacks."""
 
+    @unittest.skipIf(not ffmpeg_service.get_status().is_available, "FFmpeg is required for MP3 downloads")
     def test_live_download_short_clip(self):
         """Downloads a short test audio clip to verify hooks and output file creation."""
         result = SearchResult(
