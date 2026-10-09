@@ -1,5 +1,6 @@
 """
-Download control panel with dynamic format selection, quality picker, folder picker, and live progress indicators.
+Download control panel with destination folder picker, live progress indicators, and batch dispatching.
+Format and quality selections are managed individually on each media card.
 """
 
 from pathlib import Path
@@ -8,29 +9,13 @@ from typing import Callable, List, Optional
 import customtkinter as ctk
 
 from vyntra.config import config_manager
-from vyntra.models import AudioQuality, DownloadStatus, MediaFormat, ProgressInfo, SearchResult, VideoQuality
+from vyntra.models import MediaFormat, ProgressInfo, SearchResult
 from vyntra.services.search_service import search_service
 from vyntra.ui.theme import Theme
 
-AUDIO_QUALITY_OPTIONS = [
-    "Best (320 kbps)",
-    "320 kbps",
-    "256 kbps",
-    "192 kbps",
-    "128 kbps",
-]
-
-DEFAULT_VIDEO_QUALITY_OPTIONS = [
-    "Best (Auto)",
-    "1080p",
-    "720p",
-    "480p",
-    "360p",
-]
-
 
 class DownloadPanel(ctk.CTkFrame):
-    """Panel managing media format, dynamic video/audio quality, download directory, and progress feedback."""
+    """Panel managing download directory, batch/single download dispatch, and progress feedback."""
 
     def __init__(
         self,
@@ -53,15 +38,14 @@ class DownloadPanel(ctk.CTkFrame):
         self.selected_result: Optional[SearchResult] = None
         self._batch_items: List[SearchResult] = []
         self._is_downloading = False
-        self._cached_video_resolutions: List[str] = list(DEFAULT_VIDEO_QUALITY_OPTIONS)
+        self._cached_video_resolutions: List[str] = []
         self._probe_error_message: Optional[str] = None
-        self._is_compact_layout: Optional[bool] = None
 
         self.grid_columnconfigure(0, weight=1)
 
         # 1. Header & Selection Summary
         self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.header_frame.pack(fill="x", padx=16, pady=(14, 6))
+        self.header_frame.pack(fill="x", padx=16, pady=(12, 6))
         self.header_frame.grid_columnconfigure(1, weight=1)
 
         self.panel_title = ctk.CTkLabel(
@@ -82,58 +66,9 @@ class DownloadPanel(ctk.CTkFrame):
         )
         self.selected_title_label.grid(row=0, column=1, padx=(10, 0), sticky="e")
 
-        # 2. Options Row: Format & Quality (Adaptive Grid)
-        self.options_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.options_frame.pack(fill="x", padx=16, pady=(2, 6))
-
-        # Format Segmented Button
-        self.fmt_label = ctk.CTkLabel(
-            self.options_frame,
-            text="Format:",
-            font=Theme.FONT_BODY_BOLD,
-            text_color=Theme.TEXT_SECONDARY,
-        )
-
-        self.format_segmented = ctk.CTkSegmentedButton(
-            self.options_frame,
-            values=[MediaFormat.MP3.value, MediaFormat.MP4.value],
-            font=Theme.FONT_SUBHEADER,
-            selected_color=Theme.PRIMARY,
-            selected_hover_color=Theme.PRIMARY_HOVER,
-            unselected_color=Theme.BG_MUTED,
-            unselected_hover_color=Theme.BG_CARD_HOVER,
-            command=self._on_format_changed,
-        )
-        self.format_segmented.set(config_manager.config.default_format)
-
-        # Dynamic Quality Selector (Audio bitrate for MP3 / Video resolution for MP4)
-        self.quality_label = ctk.CTkLabel(
-            self.options_frame,
-            text="Audio Quality:",
-            font=Theme.FONT_BODY_BOLD,
-            text_color=Theme.TEXT_SECONDARY,
-        )
-
-        self.quality_option = ctk.CTkOptionMenu(
-            self.options_frame,
-            values=AUDIO_QUALITY_OPTIONS,
-            font=Theme.FONT_BODY,
-            fg_color=Theme.BG_MUTED,
-            button_color=Theme.PRIMARY,
-            button_hover_color=Theme.PRIMARY_HOVER,
-            dropdown_fg_color=Theme.BG_CARD,
-            command=self._on_quality_changed,
-        )
-        self.quality_option.set(AUDIO_QUALITY_OPTIONS[0])
-
-        self._regrid_options(is_compact=False)
-
-        # Bind configure listener for responsive layout
-        self.bind("<Configure>", self._on_configure)
-
-        # 3. Destination Row (Folder Picker)
+        # 2. Destination Row (Folder Picker)
         self.folder_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.folder_frame.pack(fill="x", padx=16, pady=(2, 6))
+        self.folder_frame.pack(fill="x", padx=16, pady=(4, 6))
         self.folder_frame.grid_columnconfigure(1, weight=1)
 
         folder_lbl = ctk.CTkLabel(
@@ -168,14 +103,14 @@ class DownloadPanel(ctk.CTkFrame):
         )
         self.browse_btn.grid(row=0, column=2, sticky="e")
 
-        # 4. Action Buttons Row (Download & Cancel)
+        # 3. Action Buttons Row (Download & Cancel)
         self.action_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.action_frame.pack(fill="x", padx=16, pady=(8, 12))
+        self.action_frame.pack(fill="x", padx=16, pady=(6, 12))
         self.action_frame.grid_columnconfigure(0, weight=1)
 
         self.download_btn = ctk.CTkButton(
             self.action_frame,
-            text="⬇ Download",
+            text="⬇ Download Video",
             font=Theme.FONT_HEADER,
             height=40,
             corner_radius=Theme.RADIUS_BUTTON,
@@ -199,9 +134,9 @@ class DownloadPanel(ctk.CTkFrame):
         self.cancel_btn.grid(row=0, column=1, padx=(10, 0), sticky="e")
         self.cancel_btn.grid_remove()
 
-        # 5. Progress Section (Hidden when idle)
+        # 4. Progress Section (Hidden when idle)
         self.progress_frame = ctk.CTkFrame(self, fg_color=Theme.BG_MAIN, corner_radius=Theme.RADIUS_CARD)
-        self.progress_frame.pack(fill="x", padx=16, pady=(0, 14))
+        self.progress_frame.pack(fill="x", padx=16, pady=(0, 12))
         self.progress_frame.grid_columnconfigure(0, weight=1)
 
         self.status_msg_label = ctk.CTkLabel(
@@ -253,11 +188,14 @@ class DownloadPanel(ctk.CTkFrame):
 
         self.progress_frame.pack_forget()
 
-        # Initialize labels based on current format
-        self._update_quality_ui()
+        # Bind configure listener for responsive layout
+        self.bind("<Configure>", self._on_configure)
+
+        # Initialize button state
+        self._update_download_button_text()
 
     def set_selected_result(self, result: Optional[SearchResult]):
-        """Updates selected search result in panel and probes available resolutions."""
+        """Updates selected search result in panel and probes available resolutions for restrictions."""
         self.selected_result = result
         self._probe_error_message = None
         if result:
@@ -266,14 +204,9 @@ class DownloadPanel(ctk.CTkFrame):
                 text_color=Theme.TEXT_ACCENT,
             )
             self.download_btn.configure(state="normal")
+            self._cached_video_resolutions = []
 
-            # Reset cached resolutions while probing new video to avoid showing stale values
-            self._cached_video_resolutions = ["Probing formats..."]
-            if self.format_segmented.get() == MediaFormat.MP4.value:
-                self.quality_option.configure(values=self._cached_video_resolutions)
-                self.quality_option.set("Probing formats...")
-
-            # Asynchronously probe available resolutions for this specific video
+            # Asynchronously probe available resolutions for account restriction detection
             search_service.get_available_resolutions_async(
                 result.url or result.video_id,
                 self._on_resolutions_probed,
@@ -283,10 +216,7 @@ class DownloadPanel(ctk.CTkFrame):
                 text="No video selected",
                 text_color=Theme.TEXT_MUTED,
             )
-            self._cached_video_resolutions = list(DEFAULT_VIDEO_QUALITY_OPTIONS)
-            if self.format_segmented.get() == MediaFormat.MP4.value:
-                self.quality_option.configure(values=self._cached_video_resolutions)
-                self.quality_option.set(self._cached_video_resolutions[0])
+            self._cached_video_resolutions = []
 
         self._update_download_button_text()
 
@@ -305,43 +235,17 @@ class DownloadPanel(ctk.CTkFrame):
         self.after(0, self._refresh_video_resolutions)
 
     def _refresh_video_resolutions(self):
-        if self.format_segmented.get() == MediaFormat.MP4.value:
-            current = self.quality_option.get()
-            self.quality_option.configure(values=self._cached_video_resolutions)
-            if current not in self._cached_video_resolutions:
-                self.quality_option.set(self._cached_video_resolutions[0])
-            self._update_download_button_text()
-
-    def _on_format_changed(self, value: str):
-        config_manager.update(default_format=value)
-        self._update_quality_ui()
+        self._update_download_button_text()
 
     def set_selected_format(self, media_format: MediaFormat):
-        """Programmatically sets format segmented button and updates quality UI."""
-        self.format_segmented.set(media_format.value)
-        self._on_format_changed(media_format.value)
-
-    def _update_quality_ui(self):
-        fmt = self.format_segmented.get()
-        if fmt == MediaFormat.MP3.value:
-            self.quality_label.configure(text="Audio Quality:")
-            self.quality_option.configure(values=AUDIO_QUALITY_OPTIONS)
-            current_q = config_manager.config.audio_quality
-            matched = [opt for opt in AUDIO_QUALITY_OPTIONS if current_q in opt]
-            self.quality_option.set(matched[0] if matched else AUDIO_QUALITY_OPTIONS[0])
-        else:
-            self.quality_label.configure(text="Video Quality:")
-            self.quality_option.configure(values=self._cached_video_resolutions)
-            self.quality_option.set(self._cached_video_resolutions[0])
-
-        self._update_download_button_text()
+        """Programmatically updates format on the selected result and refreshes UI."""
+        if self.selected_result:
+            self.selected_result.download_format = media_format
+            self._update_download_button_text()
 
     def set_batch_selected_items(self, items: List[SearchResult]):
         """Updates the list of results checked for batch download."""
         self._batch_items = list(items)
-        self._update_download_button_text()
-
-    def _on_quality_changed(self, value: str):
         self._update_download_button_text()
 
     def _update_download_button_text(self):
@@ -358,28 +262,26 @@ class DownloadPanel(ctk.CTkFrame):
             self.selected_title_label.configure(text=f"{count} videos selected for download")
             return
 
-        fmt = self.format_segmented.get()
-        q = self.quality_option.get()
-
-        if fmt == MediaFormat.MP4.value and self._cached_video_resolutions and self._cached_video_resolutions[0].startswith("["):
-            # Format probe indicated an honest error or restriction (NO fake fallbacks)
-            self.download_btn.configure(
-                text=f"⚠️ {self._cached_video_resolutions[0]}",
-                state="disabled",
-            )
-            return
-
-        self.download_btn.configure(state="normal" if self.selected_result else "disabled")
         if self.selected_result:
             self.selected_title_label.configure(text=self.selected_result.display_title)
-            card_fmt = getattr(self.selected_result, "download_format", None)
-            card_q = getattr(self.selected_result, "download_quality", None)
-            fmt_str = card_fmt.value if (card_fmt and hasattr(card_fmt, "value")) else fmt
-            q_str = (card_q or q).split()[0]
-            self.download_btn.configure(text=f"⬇ Download Video ({fmt_str} {q_str})")
+            card_fmt = getattr(self.selected_result, "download_format", MediaFormat.MP4)
+            card_q = getattr(self.selected_result, "download_quality", "720p")
+            fmt_str = card_fmt.value if (card_fmt and hasattr(card_fmt, "value")) else str(card_fmt)
+            q_str = str(card_q).split()[0] if card_q else ""
+
+            if self._cached_video_resolutions and self._cached_video_resolutions[0].startswith("["):
+                # Format probe indicated an account error or restriction
+                self.download_btn.configure(
+                    text=f"⚠️ {self._cached_video_resolutions[0]}",
+                    state="disabled",
+                )
+                return
+
+            btn_label = f"⬇ Download Video ({fmt_str} {q_str})".strip()
+            self.download_btn.configure(text=btn_label, state="normal")
         else:
             self.selected_title_label.configure(text="No video selected")
-            self.download_btn.configure(text="⬇ Download Video")
+            self.download_btn.configure(text="⬇ Download Video", state="disabled")
 
     def _browse_directory(self):
         chosen = filedialog.askdirectory(
@@ -403,11 +305,17 @@ class DownloadPanel(ctk.CTkFrame):
         return val
 
     def get_selected_format(self) -> MediaFormat:
-        val = self.format_segmented.get()
-        return MediaFormat.MP3 if val == MediaFormat.MP3.value else MediaFormat.MP4
+        if self.selected_result and hasattr(self.selected_result, "download_format"):
+            fmt = self.selected_result.download_format
+            if isinstance(fmt, MediaFormat):
+                return fmt
+            return MediaFormat.MP3 if str(fmt) == MediaFormat.MP3.value else MediaFormat.MP4
+        return MediaFormat.MP3 if config_manager.config.default_format == MediaFormat.MP3.value else MediaFormat.MP4
 
     def get_selected_quality(self) -> str:
-        return self.quality_option.get()
+        if self.selected_result and getattr(self.selected_result, "download_quality", None):
+            return self.selected_result.download_quality
+        return config_manager.config.audio_quality
 
     def update_progress(self, prog: ProgressInfo):
         """Updates the progress bar and labels in real-time."""
@@ -422,16 +330,12 @@ class DownloadPanel(ctk.CTkFrame):
         """Toggles active download state and UI controls."""
         self._is_downloading = downloading
         if downloading:
-            self.progress_frame.pack(fill="x", padx=16, pady=(0, 14))
+            self.progress_frame.pack(fill="x", padx=16, pady=(0, 12))
             self.download_btn.configure(state="disabled", text="Downloading...")
-            self.format_segmented.configure(state="disabled")
-            self.quality_option.configure(state="disabled")
             self.browse_btn.configure(state="disabled")
             self.folder_entry.configure(state="disabled")
             self.cancel_btn.grid()
         else:
-            self.format_segmented.configure(state="normal")
-            self.quality_option.configure(state="normal")
             self.browse_btn.configure(state="normal")
             self.folder_entry.configure(state="normal")
             self.cancel_btn.grid_remove()
@@ -484,32 +388,10 @@ class DownloadPanel(ctk.CTkFrame):
         self.status_msg_label.configure(text="Cancelling download...")
 
     def _on_configure(self, event):
-        """Adapts options row and title wraplength dynamically based on panel width."""
+        """Adapts title wraplength dynamically based on panel width."""
         width = event.width
         if width <= 1:
             return
 
         if hasattr(self, "selected_title_label") and self.selected_title_label.winfo_exists():
             self.selected_title_label.configure(wraplength=max(180, width - 200))
-
-        is_compact = width < 660
-        if is_compact != self._is_compact_layout:
-            self._is_compact_layout = is_compact
-            self._regrid_options(is_compact)
-
-    def _regrid_options(self, is_compact: bool):
-        """Arranges format and quality controls into single row (wide) or 2 rows (compact)."""
-        if is_compact:
-            self.options_frame.grid_columnconfigure((0, 1), weight=0)
-            self.options_frame.grid_columnconfigure((2, 3), weight=0)
-            self.fmt_label.grid(row=0, column=0, padx=(0, 8), pady=3, sticky="w")
-            self.format_segmented.grid(row=0, column=1, padx=(0, 8), pady=3, sticky="w")
-            self.quality_label.grid(row=1, column=0, padx=(0, 8), pady=3, sticky="w")
-            self.quality_option.grid(row=1, column=1, padx=(0, 8), pady=3, sticky="w")
-        else:
-            self.options_frame.grid_columnconfigure((0, 1, 2, 3), weight=0)
-            self.fmt_label.grid(row=0, column=0, padx=(0, 8), pady=2, sticky="w")
-            self.format_segmented.grid(row=0, column=1, padx=(0, 20), pady=2, sticky="w")
-            self.quality_label.grid(row=0, column=2, padx=(0, 8), pady=2, sticky="w")
-            self.quality_option.grid(row=0, column=3, pady=2, sticky="w")
-

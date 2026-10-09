@@ -448,5 +448,183 @@ class TestBatchAppDispatch(unittest.TestCase):
             root.destroy()
 
 
+class TestFooterDecoupledFormatAndQuality(unittest.TestCase):
+    """
+    Verifies that:
+    1. Format and Media Quality controls are completely removed from the footer.
+    2. Media cards retain their individual Format and Quality controls as the source of truth.
+    3. The footer download action respects each card's independent format and quality settings.
+    """
+
+    def test_footer_has_no_format_or_quality_controls(self):
+        root = ctk.CTk()
+        root.withdraw()
+        try:
+            panel = DownloadPanel(
+                root,
+                on_download=lambda *args, **kwargs: None,
+                on_cancel=lambda: None,
+            )
+            root.update_idletasks()
+
+            # Confirm no format or quality widgets exist in the footer
+            self.assertFalse(hasattr(panel, "format_segmented"))
+            self.assertFalse(hasattr(panel, "quality_option"))
+            self.assertFalse(hasattr(panel, "fmt_label"))
+            self.assertFalse(hasattr(panel, "quality_label"))
+            self.assertFalse(hasattr(panel, "options_frame"))
+
+            # Confirm essential footer controls exist
+            self.assertTrue(hasattr(panel, "header_frame"))
+            self.assertTrue(hasattr(panel, "folder_frame"))
+            self.assertTrue(hasattr(panel, "action_frame"))
+            self.assertTrue(hasattr(panel, "download_btn"))
+            self.assertTrue(hasattr(panel, "cancel_btn"))
+        finally:
+            root.destroy()
+
+    def test_media_card_retains_format_and_quality_controls(self):
+        root = ctk.CTk()
+        root.withdraw()
+        try:
+            item = SearchResult(
+                video_id="test_card_1",
+                title="Sample Video",
+                channel="Sample Channel",
+                duration_seconds=180,
+                duration_formatted="03:00",
+                thumbnail_url="",
+                url="https://youtube.com/watch?v=test_card_1",
+            )
+            card = ResultCard(root, result=item, on_select=lambda r: None)
+            root.update_idletasks()
+
+            # Both controls must remain on the media card
+            self.assertTrue(hasattr(card, "format_menu"))
+            self.assertTrue(hasattr(card, "quality_menu"))
+            self.assertTrue(hasattr(card, "download_checkbox"))
+
+            # Changing format on card updates item model
+            card._on_format_changed("MP3")
+            self.assertEqual(item.download_format, MediaFormat.MP3)
+            self.assertEqual(item.download_quality, "320 kbps")
+
+            card._on_quality_changed("256 kbps")
+            self.assertEqual(item.download_quality, "256 kbps")
+
+            card._on_format_changed("MP4")
+            self.assertEqual(item.download_format, MediaFormat.MP4)
+            self.assertEqual(item.download_quality, "720p")
+
+            card._on_quality_changed("1080p")
+            self.assertEqual(item.download_quality, "1080p")
+        finally:
+            root.destroy()
+
+    def test_single_card_download_uses_card_format_and_quality(self):
+        root = ctk.CTk()
+        root.withdraw()
+        try:
+            dispatched = []
+
+            def mock_download(res, fmt, q, d, **kwargs):
+                dispatched.append((res, fmt, q, d, kwargs))
+
+            panel = DownloadPanel(
+                root,
+                on_download=mock_download,
+                on_cancel=lambda: None,
+            )
+            root.update_idletasks()
+
+            item = SearchResult(
+                video_id="single_vid",
+                title="Single MP3 Video",
+                channel="Music",
+                duration_seconds=120,
+                duration_formatted="02:00",
+                thumbnail_url="",
+                url="https://youtube.com/watch?v=single_vid",
+            )
+            item.download_format = MediaFormat.MP3
+            item.download_quality = "320 kbps"
+
+            panel.set_selected_result(item)
+            self.assertIn("MP3", panel.download_btn.cget("text"))
+            self.assertIn("320", panel.download_btn.cget("text"))
+
+            panel._handle_download()
+            self.assertEqual(len(dispatched), 1)
+            res, fmt, q, d, kwargs = dispatched[0]
+            self.assertEqual(res.video_id, "single_vid")
+            self.assertEqual(fmt, MediaFormat.MP3)
+            self.assertEqual(q, "320 kbps")
+        finally:
+            root.destroy()
+
+    def test_batch_cards_download_respects_each_card_settings_independently(self):
+        root = ctk.CTk()
+        root.withdraw()
+        try:
+            dispatched = []
+
+            def mock_download(res, fmt, q, d, **kwargs):
+                dispatched.append((res, fmt, q, d, kwargs))
+
+            panel = DownloadPanel(
+                root,
+                on_download=mock_download,
+                on_cancel=lambda: None,
+            )
+            root.update_idletasks()
+
+            card1_item = SearchResult(
+                video_id="card1",
+                title="Song A",
+                channel="Artist A",
+                duration_seconds=150,
+                duration_formatted="02:30",
+                thumbnail_url="",
+                url="https://youtube.com/watch?v=card1",
+            )
+            card1_item.download_format = MediaFormat.MP3
+            card1_item.download_quality = "320 kbps"
+
+            card2_item = SearchResult(
+                video_id="card2",
+                title="Video B",
+                channel="Creator B",
+                duration_seconds=300,
+                duration_formatted="05:00",
+                thumbnail_url="",
+                url="https://youtube.com/watch?v=card2",
+            )
+            card2_item.download_format = MediaFormat.MP4
+            card2_item.download_quality = "1080p"
+
+            # Set batch selection with 2 cards having independent settings
+            panel.set_batch_selected_items([card1_item, card2_item])
+            self.assertEqual(panel.download_btn.cget("text"), "⬇ Download 2 Selected Videos")
+
+            # Click footer download button
+            panel._handle_download()
+            self.assertEqual(len(dispatched), 1)
+            res, fmt, q, d, kwargs = dispatched[0]
+            batch_items = kwargs.get("batch_items", [])
+            self.assertEqual(len(batch_items), 2)
+
+            # Each item in the batch preserves its own independent settings
+            self.assertEqual(batch_items[0].video_id, "card1")
+            self.assertEqual(batch_items[0].download_format, MediaFormat.MP3)
+            self.assertEqual(batch_items[0].download_quality, "320 kbps")
+
+            self.assertEqual(batch_items[1].video_id, "card2")
+            self.assertEqual(batch_items[1].download_format, MediaFormat.MP4)
+            self.assertEqual(batch_items[1].download_quality, "1080p")
+        finally:
+            root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
+

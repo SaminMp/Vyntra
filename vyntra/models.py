@@ -40,6 +40,7 @@ class MediaFormat(str, Enum):
 
 class AudioQuality(str, Enum):
     """Audio quality presets (bitrate in kbps)."""
+    LOW = "128"
     STANDARD = "192"
     HIGH = "256"
     BEST = "320"

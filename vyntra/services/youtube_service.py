@@ -896,62 +896,50 @@ class YouTubeService:
             digits = "".join(filter(str.isdigit, raw_q))
             bitrate = digits if digits in ("128", "192", "256", "320") else "320"
 
-            if ffmpeg_status.is_available:
-                ydl_opts.update({
-                    "format": "bestaudio/best",
-                    "postprocessors": [
-                        {
-                            "key": "FFmpegExtractAudio",
-                            "preferredcodec": "mp3",
-                            "preferredquality": bitrate,
-                        },
-                        {
-                            "key": "FFmpegMetadata",
-                            "add_metadata": True,
-                        },
-                    ],
-                })
-            else:
-                ydl_opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
+            ydl_opts.update({
+                "format": "bestaudio/best",
+                "postprocessors": [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": bitrate,
+                    },
+                    {
+                        "key": "FFmpegMetadata",
+                        "add_metadata": True,
+                    },
+                ],
+            })
         else:
             raw_q = str(getattr(task, "selected_quality", "") or getattr(task.video_quality, "value", "best")).lower()
             height_match = re.search(r"(\d{3,4})", raw_q)
             target_height = int(height_match.group(1)) if height_match else None
 
-            if ffmpeg_status.is_available:
-                if target_height:
-                    format_spec = (
-                        f"bestvideo[height={target_height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
-                        f"bestvideo[height={target_height}]+bestaudio/"
-                        f"best[height={target_height}]/"
-                        f"bestvideo[height<={target_height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
-                        f"bestvideo[height<={target_height}]+bestaudio/"
-                        f"best[height<={target_height}]/best"
-                    )
-                else:
-                    format_spec = (
-                        "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
-                        "bestvideo+bestaudio/best"
-                    )
-
-                ydl_opts.update({
-                    "format": format_spec,
-                    "merge_output_format": "mp4",
-                    "postprocessors": [
-                        {
-                            "key": "FFmpegMetadata",
-                            "add_metadata": True,
-                        }
-                    ],
-                })
+            if target_height:
+                format_spec = (
+                    f"bestvideo[height={target_height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+                    f"bestvideo[height={target_height}]+bestaudio/"
+                    f"best[height={target_height}]/"
+                    f"bestvideo[height<={target_height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+                    f"bestvideo[height<={target_height}]+bestaudio/"
+                    f"best[height<={target_height}]/best"
+                )
             else:
-                if target_height:
-                    ydl_opts["format"] = (
-                        f"best[height={target_height}]/"
-                        f"best[height<={target_height}]/best"
-                    )
-                else:
-                    ydl_opts["format"] = "best[ext=mp4]/best"
+                format_spec = (
+                    "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+                    "bestvideo+bestaudio/best"
+                )
+
+            ydl_opts.update({
+                "format": format_spec,
+                "merge_output_format": "mp4",
+                "postprocessors": [
+                    {
+                        "key": "FFmpegMetadata",
+                        "add_metadata": True,
+                    }
+                ] if ffmpeg_status.is_available else [],
+            })
 
         return ydl_opts
 

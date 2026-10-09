@@ -135,27 +135,32 @@ class TestResponsiveLayout(unittest.TestCase):
         finally:
             root.destroy()
 
-    def test_download_panel_adaptive_options(self):
-        """Verifies DownloadPanel reorganizes format and quality dropdowns for compact viewports."""
+    def test_download_panel_layout_and_controls(self):
+        """Verifies DownloadPanel has format/quality controls removed and adapts wraplength responsively."""
         root = ctk.CTk()
         root.withdraw()
         try:
             panel = DownloadPanel(root, on_download=lambda r, f, q, d: None, on_cancel=lambda: None)
             root.update_idletasks()
 
-            # Wide options (1 row)
-            panel._regrid_options(is_compact=False)
-            fmt_info = panel.format_segmented.grid_info()
-            q_info = panel.quality_option.grid_info()
-            self.assertEqual(int(fmt_info["row"]), 0)
-            self.assertEqual(int(q_info["row"]), 0)
+            # Ensure format and quality controls are completely removed from footer
+            self.assertFalse(hasattr(panel, "format_segmented"), "format_segmented must be removed from footer")
+            self.assertFalse(hasattr(panel, "quality_option"), "quality_option must be removed from footer")
+            self.assertFalse(hasattr(panel, "fmt_label"), "fmt_label must be removed from footer")
+            self.assertFalse(hasattr(panel, "quality_label"), "quality_label must be removed from footer")
+            self.assertFalse(hasattr(panel, "options_frame"), "options_frame must be removed from footer")
 
-            # Compact options (2 rows)
-            panel._regrid_options(is_compact=True)
-            fmt_info_c = panel.format_segmented.grid_info()
-            q_info_c = panel.quality_option.grid_info()
-            self.assertEqual(int(fmt_info_c["row"]), 0)
-            self.assertEqual(int(q_info_c["row"]), 1)
+            # Ensure remaining essential elements exist
+            self.assertTrue(hasattr(panel, "header_frame"))
+            self.assertTrue(hasattr(panel, "folder_frame"))
+            self.assertTrue(hasattr(panel, "action_frame"))
+            self.assertTrue(hasattr(panel, "download_btn"))
+
+            # Test responsive wraplength configure trigger
+            event_mock = MagicMock()
+            event_mock.width = 500
+            panel._on_configure(event_mock)
+            self.assertEqual(panel.selected_title_label.cget("wraplength"), 300)
         finally:
             root.destroy()
 

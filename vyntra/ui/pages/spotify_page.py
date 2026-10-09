@@ -7,7 +7,7 @@ Lifecycle-safe: prevents destroyed widget TclErrors and stale callback race cond
 
 from pathlib import Path
 from tkinter import filedialog
-from typing import List, Optional
+from typing import Dict, List, Optional
 import customtkinter as ctk
 
 from vyntra.config import config_manager
@@ -17,6 +17,7 @@ from vyntra.services.image_service import image_service
 from vyntra.ui.components.platform_selector import PLATFORM_METADATA
 from vyntra.ui.pages.base_page import BasePlatformPage
 from vyntra.ui.theme import Theme
+from vyntra.utils.logger import logger
 
 
 class SpotifyPage(BasePlatformPage):
@@ -31,7 +32,14 @@ class SpotifyPage(BasePlatformPage):
         self._current_items: List[MediaItem] = []
         self._selected_item: Optional[MediaItem] = None
         self._cards: List[ctk.CTkFrame] = []
+        self._card_checkboxes: List[ctk.CTkCheckBox] = []
+        self._card_quality_menus: List[ctk.CTkOptionMenu] = []
         self._is_loading = False
+        self._is_downloading = False
+        self._collection_cache: Dict[str, List[MediaItem]] = {}
+        self._active_collection_key: Optional[str] = None
+        self._toolbar_frame: Optional[ctk.CTkFrame] = None
+        self._selection_summary_lbl: Optional[ctk.CTkLabel] = None
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)  # Results container expands
@@ -142,6 +150,7 @@ class SpotifyPage(BasePlatformPage):
             font=Theme.FONT_CAPTION,
             height=28,
             selected_color=Theme.PRIMARY,
+            command=self._handle_panel_quality_changed,
         )
         self.quality_segmented.set("320 kbps")
         self.quality_segmented.pack(side="left")
@@ -218,13 +227,26 @@ class SpotifyPage(BasePlatformPage):
             config_manager.update(download_directory=chosen)
 
     def _clear_cards(self):
-        """Destroys dynamic result cards without destroying the permanent placeholder label."""
+        """Destroys dynamic result cards and toolbar without destroying permanent placeholder label."""
+        if self._toolbar_frame and self._toolbar_frame.winfo_exists():
+            try:
+                self._toolbar_frame.destroy()
+            except Exception:
+                pass
+            self._toolbar_frame = None
+            self._selection_summary_lbl = None
+
         for card in self._cards:
             try:
                 card.destroy()
             except Exception:
                 pass
         self._cards.clear()
+        self._card_checkboxes.clear()
+        self._card_quality_menus.clear()
+
+    def _normalize_collection_key(self, query: str) -> str:
+        return query.strip().lower()
 
     def _handle_search(self):
         query = self.search_entry.get().strip()
@@ -232,6 +254,8 @@ class SpotifyPage(BasePlatformPage):
             self.app.status_banner.show_warning("Please enter a song name or Spotify URL.")
             return
 
+        col_key = self._normalize_collection_key(query)
+        self._active_collection_key = col_key
         gen = self.next_generation()
         self._set_loading(True)
         self._clear_cards()
@@ -241,7 +265,7 @@ class SpotifyPage(BasePlatformPage):
             self.placeholder_label.pack(pady=40)
 
         def _on_success(items: List[MediaItem]):
-            self.safe_after(0, lambda: self._display_results(items, gen))
+            self.safe_after(0, lambda: self._display_results(items, gen, col_key=col_key))
 
         def _on_error(err: Exception):
             self.safe_after(0, lambda: self._display_error(err, gen))
@@ -255,11 +279,37 @@ class SpotifyPage(BasePlatformPage):
         if self.status_msg.winfo_exists():
             self.status_msg.configure(text="Connecting to Spotify..." if loading else "Ready")
 
-    def _display_results(self, items: List[MediaItem], generation: int):
+    def _display_results(self, items: List[MediaItem], generation: int, col_key: Optional[str] = None):
         if not self.is_generation_current(generation):
             return
 
         self._set_loading(False)
+
+        effective_key = col_key or self._active_collection_key
+        if effective_key and effective_key in self._collection_cache:
+            prev_items = self._collection_cache[effective_key]
+            prev_state = {
+                (it.video_id or it.url): (it.selected_for_download, it.download_quality)
+                for it in prev_items
+                if (it.video_id or it.url)
+            }
+            for it in items:
+                k = it.video_id or it.url
+                if k in prev_state:
+                    it.selected_for_download, it.download_quality = prev_state[k]
+                else:
+                    it.download_format = MediaFormat.MP3
+                    if not getattr(it, "download_quality", None):
+                        it.download_quality = "320 kbps"
+        else:
+            for it in items:
+                it.download_format = MediaFormat.MP3
+                if not getattr(it, "download_quality", None):
+                    it.download_quality = "320 kbps"
+
+        if effective_key:
+            self._collection_cache[effective_key] = items
+
         self._current_items = items
         self._clear_cards()
 
@@ -267,18 +317,101 @@ class SpotifyPage(BasePlatformPage):
             if self.placeholder_label.winfo_exists():
                 self.placeholder_label.configure(text="No tracks found. Try another search query or paste a Spotify track link.")
                 self.placeholder_label.pack(pady=40)
+            self._handle_download_selection_changed()
             return
 
         if self.placeholder_label.winfo_exists():
             self.placeholder_label.pack_forget()
 
+        # Add toolbar for batch controls
+        self._build_toolbar(len(items))
+
         for item in items:
             self._create_track_card(item, generation)
 
-        # Auto-select the first track
+        # Auto-select the first track for preview / single-track operations
         if items:
             self._select_track(items[0])
             self.app.status_banner.show_success(f"Found {len(items)} Spotify track(s).")
+
+        self._handle_download_selection_changed()
+
+    def _build_toolbar(self, total_count: int):
+        self._toolbar_frame = ctk.CTkFrame(self.results_container, fg_color="transparent")
+        self._toolbar_frame.pack(fill="x", padx=6, pady=(4, 6))
+        self._toolbar_frame.grid_columnconfigure(2, weight=1)
+
+        select_all_btn = ctk.CTkButton(
+            self._toolbar_frame,
+            text="☑ Select All",
+            font=Theme.FONT_CAPTION,
+            width=90,
+            height=28,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_MUTED,
+            hover_color=Theme.BG_CARD_HOVER,
+            command=self.select_all,
+        )
+        select_all_btn.grid(row=0, column=0, padx=(0, 6), sticky="w")
+
+        deselect_all_btn = ctk.CTkButton(
+            self._toolbar_frame,
+            text="☐ Deselect All",
+            font=Theme.FONT_CAPTION,
+            width=96,
+            height=28,
+            corner_radius=Theme.RADIUS_BUTTON,
+            fg_color=Theme.BG_MUTED,
+            hover_color=Theme.BG_CARD_HOVER,
+            command=self.deselect_all,
+        )
+        deselect_all_btn.grid(row=0, column=1, padx=(0, 12), sticky="w")
+
+        self._selection_summary_lbl = ctk.CTkLabel(
+            self._toolbar_frame,
+            text=f"{total_count} tracks found • 0 selected for download",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_MUTED,
+        )
+        self._selection_summary_lbl.grid(row=0, column=2, sticky="e")
+
+    def get_selected_download_items(self) -> List[MediaItem]:
+        """Returns all tracks in the active collection checked for batch download."""
+        return [it for it in self._current_items if getattr(it, "selected_for_download", False)]
+
+    def select_all(self):
+        """Checks all tracks in current collection for batch download."""
+        for it in self._current_items:
+            it.selected_for_download = True
+        for cb in self._card_checkboxes:
+            if cb.winfo_exists():
+                cb.select()
+        self._handle_download_selection_changed()
+
+    def deselect_all(self):
+        """Unchecks all tracks in current collection."""
+        for it in self._current_items:
+            it.selected_for_download = False
+        for cb in self._card_checkboxes:
+            if cb.winfo_exists():
+                cb.deselect()
+        self._handle_download_selection_changed()
+
+    def _handle_download_selection_changed(self):
+        selected_items = self.get_selected_download_items()
+        count = len(selected_items)
+        total = len(self._current_items)
+        if self._selection_summary_lbl and self._selection_summary_lbl.winfo_exists():
+            self._selection_summary_lbl.configure(
+                text=f"{total} tracks found • {count} selected for download"
+            )
+        if hasattr(self, "download_mp3_btn") and self.download_mp3_btn.winfo_exists():
+            if count > 1:
+                self.download_mp3_btn.configure(text=f"⬇ Download {count} Selected Tracks")
+            elif count == 1:
+                self.download_mp3_btn.configure(text="⬇ Download 1 Selected Track")
+            else:
+                self.download_mp3_btn.configure(text="⬇ Download MP3")
 
     def _create_track_card(self, item: MediaItem, generation: int):
         card = ctk.CTkFrame(self.results_container, fg_color=Theme.BG_CARD, corner_radius=Theme.RADIUS_CARD)
@@ -317,7 +450,7 @@ class SpotifyPage(BasePlatformPage):
         meta_lbl = ctk.CTkLabel(card, text=artist_text, font=Theme.FONT_CAPTION, text_color=Theme.TEXT_MUTED, anchor="w")
         meta_lbl.grid(row=1, column=1, sticky="w", padx=(4, 8), pady=(0, 10))
 
-        # Action Buttons container (Preview, Download, Select)
+        # Action Buttons container (Preview, Download, Select, Checkbox, Quality)
         card_actions = ctk.CTkFrame(card, fg_color="transparent")
         card_actions.grid(row=0, column=2, rowspan=2, padx=12, pady=10, sticky="e")
 
@@ -331,7 +464,7 @@ class SpotifyPage(BasePlatformPage):
             hover_color=Theme.ACCENT_CYAN,
             command=lambda it=item: self._handle_card_preview(it),
         )
-        card_preview_btn.pack(side="left", padx=(0, 6))
+        card_preview_btn.grid(row=0, column=0, padx=(0, 6), pady=(0, 4), sticky="w")
 
         card_download_btn = ctk.CTkButton(
             card_actions,
@@ -343,7 +476,7 @@ class SpotifyPage(BasePlatformPage):
             hover_color=Theme.PRIMARY_HOVER,
             command=lambda it=item: self._handle_card_download(it),
         )
-        card_download_btn.pack(side="left", padx=(0, 6))
+        card_download_btn.grid(row=0, column=1, padx=(0, 6), pady=(0, 4), sticky="w")
 
         select_btn = ctk.CTkButton(
             card_actions,
@@ -355,7 +488,50 @@ class SpotifyPage(BasePlatformPage):
             hover_color=Theme.PRIMARY,
             command=lambda it=item: self._select_track(it),
         )
-        select_btn.pack(side="left")
+        select_btn.grid(row=0, column=2, pady=(0, 4), sticky="e")
+
+        # Row 1: Per-track Download Checkbox & Audio Quality OptionMenu
+        download_checkbox = ctk.CTkCheckBox(
+            card_actions,
+            text="Download",
+            font=Theme.FONT_CAPTION,
+            text_color=Theme.TEXT_SECONDARY,
+            fg_color=Theme.PRIMARY,
+            hover_color=Theme.PRIMARY_HOVER,
+            checkmark_color="#FFFFFF",
+            width=88,
+            height=26,
+            checkbox_width=18,
+            checkbox_height=18,
+        )
+        download_checkbox.grid(row=1, column=0, columnspan=2, padx=(0, 6), pady=(2, 0), sticky="w")
+        download_checkbox.configure(command=lambda it=item, cb=download_checkbox: self._on_card_checkbox_toggled(it, cb))
+        if getattr(item, "selected_for_download", False):
+            download_checkbox.select()
+        else:
+            download_checkbox.deselect()
+        self._card_checkboxes.append(download_checkbox)
+
+        initial_quality = getattr(item, "download_quality", None)
+        if not initial_quality or initial_quality not in ("320 kbps", "256 kbps", "192 kbps", "128 kbps"):
+            initial_quality = "320 kbps"
+            item.download_quality = initial_quality
+
+        quality_menu = ctk.CTkOptionMenu(
+            card_actions,
+            values=["320 kbps", "256 kbps", "192 kbps", "128 kbps"],
+            font=Theme.FONT_CAPTION,
+            width=96,
+            height=26,
+            fg_color=Theme.BG_MUTED,
+            button_color=Theme.PRIMARY,
+            button_hover_color=Theme.PRIMARY_HOVER,
+            dropdown_fg_color=Theme.BG_CARD,
+            command=lambda val, it=item: self._on_card_quality_changed(val, it),
+        )
+        quality_menu.set(initial_quality)
+        quality_menu.grid(row=1, column=2, pady=(2, 0), sticky="e")
+        self._card_quality_menus.append(quality_menu)
 
         # Dynamic wraplength on card resize
         def _on_card_resized(event, t=title_lbl, m=meta_lbl):
@@ -368,15 +544,57 @@ class SpotifyPage(BasePlatformPage):
 
         card.bind("<Configure>", _on_card_resized)
 
+    def _on_card_checkbox_toggled(self, item: MediaItem, checkbox: ctk.CTkCheckBox):
+        item.selected_for_download = bool(checkbox.get())
+        self._handle_download_selection_changed()
+
+    def _on_card_quality_changed(self, val: str, item: MediaItem):
+        item.download_quality = val
+        if self._selected_item and (self._selected_item == item or self._selected_item.video_id == item.video_id):
+            if hasattr(self, "quality_segmented") and self.quality_segmented.winfo_exists():
+                self.quality_segmented.set(val)
+
+    def _sync_card_quality_menu(self, item: MediaItem, quality: str):
+        for idx, it in enumerate(self._current_items):
+            if it == item or it.video_id == item.video_id:
+                if idx < len(self._card_quality_menus) and self._card_quality_menus[idx].winfo_exists():
+                    self._card_quality_menus[idx].set(quality)
+
+    def _handle_panel_quality_changed(self, val: str):
+        if self._selected_item:
+            self._selected_item.download_quality = val
+            self._sync_card_quality_menu(self._selected_item, val)
+
     def _handle_card_preview(self, item: MediaItem):
         """Immediately selects track and starts 30s preview playback."""
         self._select_track(item)
         self._handle_play_preview()
 
     def _handle_card_download(self, item: MediaItem):
-        """Immediately selects track and initiates MP3 download."""
+        """Immediately selects track and initiates MP3 download for that single track."""
+        if self._is_downloading:
+            return
+        if not ((item.title and item.title.strip()) or (item.url and item.url.strip())):
+            self.app.status_banner.show_warning("The track does not have a usable download source.")
+            return
+
         self._select_track(item)
-        self._handle_start_download()
+        save_dir = self.folder_entry.get().strip() or config_manager.config.download_directory
+        quality_str = getattr(item, "download_quality", None) or self.quality_segmented.get()
+        item.download_format = MediaFormat.MP3
+        item.download_quality = quality_str
+
+        self.status_msg.configure(text=f"Starting MP3 download ({quality_str})...")
+        self.progress_bar.set(0.0)
+        if self.progress_frame.winfo_exists():
+            self.progress_frame.grid()
+
+        self.app._handle_start_download(
+            result=item,
+            media_format=MediaFormat.MP3,
+            quality=quality_str,
+            save_dir=save_dir,
+        )
 
     def _select_track(self, item: MediaItem):
         self._selected_item = item
@@ -386,6 +604,10 @@ class SpotifyPage(BasePlatformPage):
                 text=f"Selected: {item.display_title} — {item.channel}{album_str}",
                 text_color=Theme.TEXT_PRIMARY,
             )
+        if hasattr(self, "quality_segmented") and self.quality_segmented.winfo_exists():
+            q = getattr(item, "download_quality", "320 kbps")
+            if q in ("320 kbps", "256 kbps", "192 kbps", "128 kbps"):
+                self.quality_segmented.set(q)
 
     def _display_error(self, err: Exception, generation: int):
         if not self.is_generation_current(generation):
@@ -410,31 +632,75 @@ class SpotifyPage(BasePlatformPage):
         self.app._handle_play_audio(self._selected_item)
 
     def _handle_start_download(self):
-        """Dispatches audio-only MP3 download job."""
-        if not self._selected_item:
-            self.app.status_banner.show_warning("Please select a song first.")
+        """Dispatches audio-only MP3 download job(s) for selected tracks or active track."""
+        if self._is_downloading:
             return
 
-        save_dir = self.folder_entry.get().strip() or config_manager.config.download_directory
-        bitrate_str = self.quality_segmented.get().split()[0]  # e.g. "320"
+        selected_items = self.get_selected_download_items()
 
-        audio_q = AudioQuality.BEST
-        if bitrate_str == "192":
-            audio_q = AudioQuality.STANDARD
-        elif bitrate_str == "256":
-            audio_q = AudioQuality.HIGH
+        # Scenario 1: Multi-selection exists
+        if selected_items:
+            valid_items: List[MediaItem] = []
+            for it in selected_items:
+                if (it.title and it.title.strip()) or (it.url and it.url.strip()):
+                    it.download_format = MediaFormat.MP3
+                    if not getattr(it, "download_quality", None):
+                        it.download_quality = "320 kbps"
+                    valid_items.append(it)
+                else:
+                    logger.warning("[Spotify] Skipping track with invalid download source: %s", it)
 
-        self.status_msg.configure(text=f"Starting MP3 download ({bitrate_str} kbps)...")
-        self.progress_bar.set(0.0)
-        if self.progress_frame.winfo_exists():
-            self.progress_frame.grid()
+            if not valid_items:
+                self.app.status_banner.show_warning("None of the selected tracks have a usable download source.")
+                return
 
-        self.app._handle_start_download(
-            result=self._selected_item,
-            media_format=MediaFormat.MP3,
-            quality=bitrate_str,
-            save_dir=save_dir,
-        )
+            save_dir = self.folder_entry.get().strip() or config_manager.config.download_directory
+
+            self.status_msg.configure(text=f"Queueing {len(valid_items)} Spotify track(s)...")
+            self.progress_bar.set(0.0)
+            if self.progress_frame.winfo_exists():
+                self.progress_frame.grid()
+
+            self.app._handle_start_download(
+                result=valid_items[0],
+                media_format=MediaFormat.MP3,
+                quality=valid_items[0].download_quality,
+                save_dir=save_dir,
+                batch_items=valid_items,
+            )
+            return
+
+        # Scenario 2: Multi-item collection (album/playlist) with no items checked
+        if len(self._current_items) > 1:
+            self.app.status_banner.show_warning("Please select at least one song to download.")
+            return
+
+        # Scenario 3: Single item collection or single active track
+        if self._selected_item:
+            target = self._selected_item
+            if not ((target.title and target.title.strip()) or (target.url and target.url.strip())):
+                self.app.status_banner.show_warning("The selected track does not have a usable download source.")
+                return
+
+            save_dir = self.folder_entry.get().strip() or config_manager.config.download_directory
+            bitrate_str = getattr(target, "download_quality", None) or self.quality_segmented.get()
+            target.download_format = MediaFormat.MP3
+            target.download_quality = bitrate_str
+
+            self.status_msg.configure(text=f"Starting MP3 download ({bitrate_str})...")
+            self.progress_bar.set(0.0)
+            if self.progress_frame.winfo_exists():
+                self.progress_frame.grid()
+
+            self.app._handle_start_download(
+                result=target,
+                media_format=MediaFormat.MP3,
+                quality=bitrate_str,
+                save_dir=save_dir,
+            )
+            return
+
+        self.app.status_banner.show_warning("Please select a song first.")
 
     def update_progress(self, prog: ProgressInfo):
         if self.progress_frame.winfo_exists() and not self.progress_frame.winfo_ismapped():
@@ -445,6 +711,7 @@ class SpotifyPage(BasePlatformPage):
             self.status_msg.configure(text=f"{prog.status_message} ({prog.percent:.1f}%)")
 
     def set_downloading(self, is_downloading: bool):
+        self._is_downloading = is_downloading
         if self.download_mp3_btn.winfo_exists():
             self.download_mp3_btn.configure(state="disabled" if is_downloading else "normal")
         if self.preview_btn.winfo_exists():

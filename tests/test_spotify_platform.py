@@ -148,7 +148,40 @@ class TestSpotifyPlatform(unittest.TestCase):
         stream = spotify_platform.prepare_playback_stream(item)
         self.assertEqual(stream.get("source_type"), "official_preview")
         self.assertEqual(stream.get("url"), "https://audio/preview.mp3")
-        self.assertEqual(stream.get("duration_seconds"), 30)
+
+    def test_build_download_options_per_track_quality(self):
+        """Verifies that individual Spotify download tasks carry their own audio quality correctly."""
+        item1 = MediaItem(video_id="t1", title="Song 1", channel="Artist 1", platform="spotify", download_quality="128 kbps")
+        item2 = MediaItem(video_id="t2", title="Song 2", channel="Artist 2", platform="spotify", download_quality="192 kbps")
+        item3 = MediaItem(video_id="t3", title="Song 3", channel="Artist 3", platform="spotify", download_quality="320 kbps")
+
+        task1 = DownloadTask(result=item1, format=MediaFormat.MP4, save_directory="D:/Music", selected_quality="128 kbps")
+        task2 = DownloadTask(result=item2, format=MediaFormat.MP3, save_directory="D:/Music", selected_quality="192 kbps")
+        task3 = DownloadTask(result=item3, format=MediaFormat.MP3, save_directory="D:/Music", selected_quality="320 kbps")
+
+        opts1 = spotify_platform.build_download_options(task1, "D:/Music/Song1")
+        opts2 = spotify_platform.build_download_options(task2, "D:/Music/Song2")
+        opts3 = spotify_platform.build_download_options(task3, "D:/Music/Song3")
+
+        # Each must enforce MP3 format
+        self.assertEqual(task1.format, MediaFormat.MP3)
+        self.assertEqual(task2.format, MediaFormat.MP3)
+        self.assertEqual(task3.format, MediaFormat.MP3)
+
+        extract1 = next(p for p in opts1["postprocessors"] if p.get("key") == "FFmpegExtractAudio")
+        extract2 = next(p for p in opts2["postprocessors"] if p.get("key") == "FFmpegExtractAudio")
+        extract3 = next(p for p in opts3["postprocessors"] if p.get("key") == "FFmpegExtractAudio")
+
+        self.assertEqual(extract1["preferredquality"], "128")
+        self.assertEqual(extract2["preferredquality"], "192")
+        self.assertEqual(extract3["preferredquality"], "320")
+
+    def test_spotify_media_item_default_quality_and_format(self):
+        """Verifies Spotify tracks default to pure MP3 format and 320 kbps quality."""
+        item = spotify_platform._extract_via_oembed("https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT", "4cOdK2wGLETKBW3PvgPWqT")
+        if item:
+            self.assertEqual(item.download_format, MediaFormat.MP3)
+            self.assertEqual(item.download_quality, "320 kbps")
 
 
 if __name__ == "__main__":

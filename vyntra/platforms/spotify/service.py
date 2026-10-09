@@ -203,6 +203,8 @@ class SpotifyPlatform(BasePlatformService):
                     url=track_url,
                     platform=self.platform_id,
                     preview_url=preview_url,
+                    download_format=MediaFormat.MP3,
+                    download_quality="320 kbps",
                 )
                 items.append(item)
 
@@ -272,6 +274,8 @@ class SpotifyPlatform(BasePlatformService):
                             url=f"https://open.spotify.com/track/{track_id}",
                             platform=self.platform_id,
                             preview_url=preview_url,
+                            download_format=MediaFormat.MP3,
+                            download_quality="320 kbps",
                         )
                         items.append(item)
 
@@ -343,6 +347,8 @@ class SpotifyPlatform(BasePlatformService):
                 url=f"https://open.spotify.com/track/{track_id}",
                 platform=self.platform_id,
                 preview_url=preview_url,
+                download_format=MediaFormat.MP3,
+                download_quality="320 kbps",
             )
         except Exception as err:
             logger.error("[Spotify] Embed extraction failed for %s: %s", url, err)
@@ -401,6 +407,8 @@ class SpotifyPlatform(BasePlatformService):
                         url=f"https://open.spotify.com/track/{tid}",
                         platform=self.platform_id,
                         preview_url=preview_url,
+                        download_format=MediaFormat.MP3,
+                        download_quality="320 kbps",
                     )
                 )
             return items
@@ -421,6 +429,8 @@ class SpotifyPlatform(BasePlatformService):
                     thumbnail_url=data.get("thumbnail_url", ""),
                     url=f"https://open.spotify.com/track/{track_id}",
                     platform=self.platform_id,
+                    download_format=MediaFormat.MP3,
+                    download_quality="320 kbps",
                 )
         except Exception as err:
             logger.error("[Spotify] oEmbed fallback failed: %s", err)
@@ -464,7 +474,17 @@ class SpotifyPlatform(BasePlatformService):
         """
         task.format = MediaFormat.MP3
 
-        bitrate = task.audio_quality.value if isinstance(task.audio_quality, AudioQuality) else "320"
+        # Extract bitrate from task.selected_quality (e.g. "320 kbps", "192 kbps") or task.audio_quality
+        bitrate = "320"
+        quality_str = str(getattr(task, "selected_quality", "") or "")
+        match = re.search(r"\b(128|192|256|320)\b", quality_str)
+        if match:
+            bitrate = match.group(1)
+        elif isinstance(task.audio_quality, AudioQuality):
+            bitrate = task.audio_quality.value
+        elif str(getattr(task, "audio_quality", "")) in ("128", "192", "256", "320"):
+            bitrate = str(task.audio_quality)
+
         if bitrate not in ("128", "192", "256", "320"):
             bitrate = "320"
 

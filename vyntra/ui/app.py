@@ -593,7 +593,9 @@ class VyntraApp(ctk.CTk):
                 audio_q_str = item_quality
 
             audio_quality = AudioQuality.BEST
-            if "192" in audio_q_str:
+            if "128" in audio_q_str:
+                audio_quality = AudioQuality.LOW
+            elif "192" in audio_q_str:
                 audio_quality = AudioQuality.STANDARD
             elif "256" in audio_q_str:
                 audio_quality = AudioQuality.HIGH
@@ -797,7 +799,6 @@ class VyntraApp(ctk.CTk):
         self._update_auth_badge()
         self.youtube_page.download_panel.folder_entry.delete(0, "end")
         self.youtube_page.download_panel.folder_entry.insert(0, config_manager.config.download_directory)
-        self.youtube_page.download_panel.format_segmented.set(config_manager.config.default_format)
         self.status_banner.show_success("Setup complete! Welcome to Vyntra.")
 
     def _update_auth_badge(self):
@@ -809,7 +810,6 @@ class VyntraApp(ctk.CTk):
         # Refresh download directory in all active panels
         self.youtube_page.download_panel.folder_entry.delete(0, "end")
         self.youtube_page.download_panel.folder_entry.insert(0, config_manager.config.download_directory)
-        self.youtube_page.download_panel.format_segmented.set(config_manager.config.default_format)
         self._update_auth_badge()
         self.status_banner.show_info("Preferences updated successfully.")
 

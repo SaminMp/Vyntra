@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 from PIL import Image
 import customtkinter as ctk
 
-from vyntra.models import MediaItem, Platform
+from vyntra.models import AudioQuality, MediaFormat, MediaItem, Platform
 from vyntra.services.image_service import image_service
 from vyntra.ui.app import VyntraApp
 from vyntra.ui.components.platform_selector import PLATFORM_METADATA, PlatformSelector
@@ -189,6 +189,182 @@ class TestSpotifyAndPlatformSelector(unittest.TestCase):
             self.assertTrue(any("Preview" in t for t in btn_texts))
             self.assertTrue(any("Download" in t for t in btn_texts))
             self.assertTrue(any("Select" in t for t in btn_texts))
+
+            # Check that Download checkbox and audio quality menu exist on the card
+            checkboxes = [w for w in action_frames[0].winfo_children() if isinstance(w, ctk.CTkCheckBox)]
+            option_menus = [w for w in action_frames[0].winfo_children() if isinstance(w, ctk.CTkOptionMenu)]
+            self.assertEqual(len(checkboxes), 1)
+            self.assertEqual(len(option_menus), 1)
+            self.assertEqual(checkboxes[0].cget("text"), "Download")
+            self.assertEqual(option_menus[0].get(), "320 kbps")
+        finally:
+            app.destroy()
+
+    def test_spotify_multi_select_and_select_all(self):
+        """Verifies multi-select checkboxes, Select All, Deselect All, and toolbar counter."""
+        app = VyntraApp()
+        try:
+            app._switch_platform("spotify")
+            sp = app._pages["spotify"]
+            app.update_idletasks()
+
+            items = [
+                MediaItem(video_id="t1", title="Song 1", channel="Artist 1", platform="spotify", download_quality="320 kbps"),
+                MediaItem(video_id="t2", title="Song 2", channel="Artist 2", platform="spotify", download_quality="320 kbps"),
+                MediaItem(video_id="t3", title="Song 3", channel="Artist 3", platform="spotify", download_quality="320 kbps"),
+            ]
+            sp._display_results(items, sp.next_generation(), col_key="test_album")
+            app.update_idletasks()
+
+            # Initially none selected for download
+            self.assertEqual(len(sp.get_selected_download_items()), 0)
+            self.assertIn("0 selected for download", sp._selection_summary_lbl.cget("text"))
+            self.assertEqual(sp.download_mp3_btn.cget("text"), "⬇ Download MP3")
+
+            # Select All
+            sp.select_all()
+            app.update_idletasks()
+            self.assertEqual(len(sp.get_selected_download_items()), 3)
+            self.assertIn("3 selected for download", sp._selection_summary_lbl.cget("text"))
+            self.assertEqual(sp.download_mp3_btn.cget("text"), "⬇ Download 3 Selected Tracks")
+
+            # Deselect All
+            sp.deselect_all()
+            app.update_idletasks()
+            self.assertEqual(len(sp.get_selected_download_items()), 0)
+            self.assertIn("0 selected for download", sp._selection_summary_lbl.cget("text"))
+            self.assertEqual(sp.download_mp3_btn.cget("text"), "⬇ Download MP3")
+
+            # Repeatedly clicking Select All should not duplicate items
+            sp.select_all()
+            sp.select_all()
+            self.assertEqual(len(sp.get_selected_download_items()), 3)
+        finally:
+            app.destroy()
+
+    def test_spotify_per_track_quality_selection_and_batch_download(self):
+        """Verifies each Spotify track carries its own audio quality setting into the download queue."""
+        app = VyntraApp()
+        try:
+            app._switch_platform("spotify")
+            sp = app._pages["spotify"]
+            app.update_idletasks()
+
+            items = [
+                MediaItem(video_id="t1", title="Song 1", channel="Artist 1", platform="spotify"),
+                MediaItem(video_id="t2", title="Song 2", channel="Artist 2", platform="spotify"),
+                MediaItem(video_id="t3", title="Song 3", channel="Artist 3", platform="spotify"),
+            ]
+            sp._display_results(items, sp.next_generation(), col_key="test_playlist")
+            app.update_idletasks()
+
+            # Set independent qualities on cards
+            sp._on_card_quality_changed("128 kbps", items[0])
+            sp._on_card_quality_changed("192 kbps", items[1])
+            sp._on_card_quality_changed("256 kbps", items[2])
+
+            self.assertEqual(items[0].download_quality, "128 kbps")
+            self.assertEqual(items[1].download_quality, "192 kbps")
+            self.assertEqual(items[2].download_quality, "256 kbps")
+
+            # Select Song 1 and Song 3 only (Song 2 not selected)
+            items[0].selected_for_download = True
+            items[2].selected_for_download = True
+            sp._handle_download_selection_changed()
+
+            # Mock download execution so tasks stay in queue
+            with patch.object(app, "_process_next_download_task"):
+                sp._handle_start_download()
+
+                # Verify only the 2 selected tracks are queued
+                self.assertEqual(len(app._download_queue), 2)
+
+                task1 = app._download_queue[0]
+                task2 = app._download_queue[1]
+
+                # Verify task 1 has Song 1's quality (128 kbps -> LOW)
+                self.assertEqual(task1.result.video_id, "t1")
+                self.assertEqual(task1.selected_quality, "128 kbps")
+                self.assertEqual(task1.format, MediaFormat.MP3)
+
+                # Verify task 2 has Song 3's quality (256 kbps -> HIGH)
+                self.assertEqual(task2.result.video_id, "t3")
+                self.assertEqual(task2.selected_quality, "256 kbps")
+                self.assertEqual(task2.format, MediaFormat.MP3)
+        finally:
+            app.destroy()
+
+    def test_spotify_no_tracks_selected_prevents_silent_queue(self):
+        """Verifies clicking download with 0 tracks selected does NOT silently queue the playlist."""
+        app = VyntraApp()
+        try:
+            app._switch_platform("spotify")
+            sp = app._pages["spotify"]
+            app.update_idletasks()
+
+            items = [
+                MediaItem(video_id="t1", title="Song 1", channel="Artist 1", platform="spotify"),
+                MediaItem(video_id="t2", title="Song 2", channel="Artist 2", platform="spotify"),
+            ]
+            sp._display_results(items, sp.next_generation(), col_key="empty_selection")
+            sp.deselect_all()
+            app.update_idletasks()
+
+            with patch.object(app.status_banner, "show_warning") as mock_warn:
+                sp._handle_start_download()
+                mock_warn.assert_called_once()
+                self.assertEqual(len(app._download_queue), 0)
+        finally:
+            app.destroy()
+
+    def test_spotify_collection_scoping_and_state_preservation(self):
+        """Verifies selection is scoped to active collection and preserved when returning."""
+        app = VyntraApp()
+        try:
+            app._switch_platform("spotify")
+            sp = app._pages["spotify"]
+            app.update_idletasks()
+
+            items_a = [
+                MediaItem(video_id="a1", title="Track A1", channel="Artist A", platform="spotify"),
+                MediaItem(video_id="a2", title="Track A2", channel="Artist A", platform="spotify"),
+            ]
+            sp._display_results(items_a, sp.next_generation(), col_key="playlist_alpha")
+            items_a[0].selected_for_download = True
+            sp._on_card_quality_changed("192 kbps", items_a[0])
+            sp._handle_download_selection_changed()
+
+            self.assertEqual(len(sp.get_selected_download_items()), 1)
+
+            # Navigate to playlist beta
+            items_b = [
+                MediaItem(video_id="b1", title="Track B1", channel="Artist B", platform="spotify"),
+                MediaItem(video_id="b2", title="Track B2", channel="Artist B", platform="spotify"),
+            ]
+            sp._display_results(items_b, sp.next_generation(), col_key="playlist_beta")
+            # In playlist beta, no tracks should be selected initially
+            self.assertEqual(len(sp.get_selected_download_items()), 0)
+
+            # Select B2 in playlist beta
+            items_b[1].selected_for_download = True
+            sp._handle_download_selection_changed()
+            self.assertEqual(len(sp.get_selected_download_items()), 1)
+            self.assertEqual(sp.get_selected_download_items()[0].video_id, "b2")
+
+            # Return to playlist alpha
+            items_a_reloaded = [
+                MediaItem(video_id="a1", title="Track A1", channel="Artist A", platform="spotify"),
+                MediaItem(video_id="a2", title="Track A2", channel="Artist A", platform="spotify"),
+            ]
+            sp._display_results(items_a_reloaded, sp.next_generation(), col_key="playlist_alpha")
+
+            # Verify playlist alpha's selections and quality were restored
+            selected_a = sp.get_selected_download_items()
+            self.assertEqual(len(selected_a), 1)
+            self.assertEqual(selected_a[0].video_id, "a1")
+            self.assertEqual(selected_a[0].download_quality, "192 kbps")
+            # B2 must not be in playlist alpha
+            self.assertFalse(any(it.video_id == "b2" for it in sp._current_items))
         finally:
             app.destroy()
 
